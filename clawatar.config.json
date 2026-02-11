@@ -1,0 +1,19 @@
+{
+  "model": {
+    "url": "/models/avatar.vrm",
+    "autoLoad": true
+  },
+  "voice": {
+    "elevenlabsVoiceId": "your-voice-id-here",
+    "elevenlabsModel": "eleven_turbo_v2_5"
+  },
+  "server": {
+    "vitePort": 3000,
+    "wsPort": 8765,
+    "audioPort": 8866
+  },
+  "openclaw": {
+    "gatewayPort": 18789,
+    "sessionId": "vrm-chat"
+  }
+}

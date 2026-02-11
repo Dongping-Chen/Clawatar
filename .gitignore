@@ -1,0 +1,7 @@
+node_modules/
+dist/
+server/_audio_cache/
+*.local
+.DS_Store
+*.vrm
+dist/

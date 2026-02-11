@@ -1,0 +1,341 @@
+import { WebSocketServer, WebSocket } from 'ws'
+import { createServer } from 'http'
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync } from 'fs'
+import { join, resolve } from 'path'
+import { randomUUID } from 'crypto'
+
+// Load config
+const CONFIG_PATH = resolve(import.meta.dirname ?? '.', '..', 'clawatar.config.json')
+let config: any = {}
+try { config = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) } catch {}
+
+const WS_PORT = config.server?.wsPort || 8765
+const AUDIO_PORT = config.server?.audioPort || 8866
+const AUDIO_CACHE_DIR = resolve(import.meta.dirname ?? '.', '_audio_cache')
+const MAX_CACHE_FILES = 64
+
+// ElevenLabs config
+const VOICE_ID = process.env.ELEVEN_LABS_VOICE_ID || config.voice?.elevenlabsVoiceId || 'L5vK1xowu0LZIPxjLSl5'
+const MODEL_ID = process.env.ELEVEN_LABS_MODEL || config.voice?.elevenlabsModel || 'eleven_turbo_v2_5'
+
+function getApiKey(): string {
+  if (process.env.ELEVENLABS_API_KEY) return process.env.ELEVENLABS_API_KEY
+  try {
+    const configPath = join(process.env.HOME || '', '.openclaw', 'openclaw.json')
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    return config?.skills?.entries?.sag?.apiKey || ''
+  } catch { return '' }
+}
+
+const API_KEY = getApiKey()
+
+// Ensure cache dir
+mkdirSync(AUDIO_CACHE_DIR, { recursive: true })
+
+// --- Audio HTTP server ---
+const audioServer = createServer((req, res) => {
+  // CORS
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'GET')
+  
+  if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return }
+
+  const match = req.url?.match(/^\/audio\/([a-f0-9-]+\.mp3)$/)
+  if (!match) { res.writeHead(404); res.end('Not found'); return }
+
+  const filePath = join(AUDIO_CACHE_DIR, match[1])
+  if (!existsSync(filePath)) { res.writeHead(404); res.end('Not found'); return }
+
+  const data = readFileSync(filePath)
+  res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store', 'Content-Length': data.length })
+  res.end(data)
+})
+
+let actualAudioPort = AUDIO_PORT
+
+audioServer.on('error', (err: any) => {
+  if (err.code === 'EADDRINUSE') {
+    console.log(`Port ${actualAudioPort} in use, trying ${actualAudioPort + 1}...`)
+    actualAudioPort++
+    audioServer.listen(actualAudioPort)
+  } else {
+    console.error('Audio server error:', err)
+  }
+})
+
+audioServer.listen(AUDIO_PORT, () => {
+  console.log(`Audio HTTP server on http://localhost:${actualAudioPort}`)
+})
+
+// --- TTS generation ---
+async function generateTTS(text: string): Promise<string> {
+  if (!API_KEY) throw new Error('No ElevenLabs API key configured')
+  
+  const endpoint = `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'xi-api-key': API_KEY,
+      'accept': 'audio/mpeg',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      text: text.trim(),
+      model_id: MODEL_ID,
+      voice_settings: { stability: 0.45, similarity_boost: 0.75 },
+    }),
+  })
+
+  if (!resp.ok) {
+    const body = await resp.text()
+    throw new Error(`ElevenLabs error (${resp.status}): ${body.slice(0, 300)}`)
+  }
+
+  const buffer = Buffer.from(await resp.arrayBuffer())
+  const fileName = `${randomUUID()}.mp3`
+  writeFileSync(join(AUDIO_CACHE_DIR, fileName), buffer)
+  pruneCache()
+  return `http://localhost:${actualAudioPort}/audio/${fileName}`
+}
+
+function pruneCache() {
+  try {
+    const files = readdirSync(AUDIO_CACHE_DIR)
+      .filter(f => f.endsWith('.mp3'))
+      .map(f => ({ name: f, mtime: statSync(join(AUDIO_CACHE_DIR, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
+    for (const f of files.slice(MAX_CACHE_FILES)) {
+      try { unlinkSync(join(AUDIO_CACHE_DIR, f.name)) } catch {}
+    }
+  } catch {}
+}
+
+// --- OpenClaw Agent Integration ---
+const GATEWAY_PORT = config.openclaw?.gatewayPort || 18789
+const GATEWAY_TOKEN = (() => {
+  try {
+    const configPath = join(process.env.HOME || '', '.openclaw', 'openclaw.json')
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+    return config?.gateway?.auth?.token || ''
+  } catch { return '' }
+})()
+
+// Simple action picker based on text sentiment
+function pickAction(text: string): { action_id: string, expression: string, expression_weight: number } {
+  const lower = text.toLowerCase()
+  if (lower.match(/\b(haha|lol|funny|laugh|😂|😄)\b/)) return { action_id: '125_Laughing', expression: 'happy', expression_weight: 0.9 }
+  if (lower.match(/\b(hi|hello|hey|greet|welcome)\b/)) return { action_id: '161_Waving', expression: 'happy', expression_weight: 0.7 }
+  if (lower.match(/\b(yes|yeah|sure|agree|ok|okay|right)\b/)) return { action_id: '118_Head Nod Yes', expression: 'happy', expression_weight: 0.6 }
+  if (lower.match(/\b(no|nope|disagree|don't)\b/)) return { action_id: '144_Shaking Head No', expression: 'neutral', expression_weight: 0.5 }
+  if (lower.match(/\b(sad|sorry|bad|unfortunately)\b/)) return { action_id: '142_Sad Idle', expression: 'sad', expression_weight: 0.7 }
+  if (lower.match(/\b(think|hmm|consider|maybe|probably)\b/)) return { action_id: '88_Thinking', expression: 'neutral', expression_weight: 0.5 }
+  if (lower.match(/\b(thank|thanks|appreciate|grateful)\b/)) return { action_id: '156_Thankful', expression: 'happy', expression_weight: 0.8 }
+  if (lower.match(/\b(wow|amazing|awesome|incredible|cool)\b/)) return { action_id: '116_Happy Hand Gesture', expression: 'surprised', expression_weight: 0.8 }
+  if (lower.match(/\b(dance|party|celebrate)\b/)) return { action_id: '54_Macarena Dance', expression: 'happy', expression_weight: 0.9 }
+  if (lower.match(/\b(shrug|dunno|idk|whatever)\b/)) return { action_id: '145_Shrugging', expression: 'neutral', expression_weight: 0.5 }
+  // Default: talking gesture
+  return { action_id: '86_Talking', expression: 'happy', expression_weight: 0.5 }
+}
+
+async function askOpenClaw(userText: string): Promise<string> {
+  // Use CLI with --json and strip any non-JSON output
+  const { execSync } = await import('child_process')
+  try {
+    const result = execSync(
+      `openclaw agent --message ${JSON.stringify(userText)} --json --session-id ${config.openclaw?.sessionId || 'vrm-chat'} 2>/dev/null`,
+      { encoding: 'utf-8', timeout: 120000 }
+    )
+    // Strip CLI UI decorations, find the main JSON object
+    // The output has "│ ◇ Config warnings ..." before the JSON
+    const lines = result.split('\n')
+    let jsonStr = ''
+    let braceDepth = 0
+    let inJson = false
+    for (const line of lines) {
+      if (!inJson && line.trim().startsWith('{')) {
+        inJson = true
+      }
+      if (inJson) {
+        jsonStr += line + '\n'
+        for (const ch of line) {
+          if (ch === '{') braceDepth++
+          if (ch === '}') braceDepth--
+        }
+        if (braceDepth <= 0 && inJson) break
+      }
+    }
+    if (jsonStr) {
+      const parsed = JSON.parse(jsonStr)
+      // OpenClaw agent output: result.payloads[0].text
+      const payloadText = parsed?.result?.payloads?.[0]?.text
+      if (payloadText) return payloadText
+      return parsed?.reply || parsed?.text || parsed?.message || 'Hmm?'
+    }
+    return 'I couldn\'t process that.'
+  } catch (e: any) {
+    console.error('CLI error:', e.message)
+    // Last resort: try gateway HTTP API
+    try {
+      const resp = await fetch(`http://127.0.0.1:${GATEWAY_PORT}/api/agent`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+        },
+        body: JSON.stringify({
+          message: userText,
+          session: 'vrm-chat',
+          channel: 'webchat',
+        }),
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        return data?.reply || data?.text || data?.message || 'I couldn\'t process that.'
+      }
+    } catch {}
+    throw e
+  }
+}
+
+async function handleUserSpeech(text: string, senderWs: WebSocket) {
+  console.log(`User said: "${text}"`)
+
+  // Get response from OpenClaw
+  let response: string
+  try {
+    response = await askOpenClaw(text)
+  } catch (e: any) {
+    console.error('OpenClaw error:', e.message)
+    response = "Sorry, I'm having trouble connecting to my brain right now."
+  }
+
+  console.log(`Avatar responds: "${response}"`)
+
+  // Pick action based on response content
+  const { action_id, expression, expression_weight } = pickAction(response)
+
+  // Generate TTS
+  try {
+    const audioUrl = await generateTTS(response)
+    const audioMsg = JSON.stringify({
+      type: 'speak_audio',
+      audio_url: audioUrl,
+      text: response,
+      action_id,
+      expression,
+      expression_weight,
+    })
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(audioMsg)
+      }
+    }
+    console.log(`TTS + action sent: ${action_id}, ${expression}`)
+  } catch (e: any) {
+    console.error('TTS error, sending text-only:', e.message)
+    // Fallback: send speak without audio
+    const fallbackMsg = JSON.stringify({
+      type: 'speak',
+      text: response,
+      action_id,
+      expression,
+      expression_weight,
+    })
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(fallbackMsg)
+      }
+    }
+  }
+}
+
+// --- WebSocket server ---
+const wss = new WebSocketServer({ port: WS_PORT })
+const clients = new Set<WebSocket>()
+
+wss.on('connection', (ws) => {
+  clients.add(ws)
+  console.log(`Client connected (${clients.size} total)`)
+
+  ws.on('message', async (data) => {
+    const msg = data.toString()
+    console.log('Received:', msg)
+
+    let parsed: any
+    try { parsed = JSON.parse(msg) } catch { parsed = null }
+
+    // Handle speak command - generate TTS then broadcast audio URL
+    if (parsed?.type === 'speak' && parsed.text) {
+      try {
+        const audioUrl = await generateTTS(parsed.text)
+        const audioMsg = JSON.stringify({
+          type: 'speak_audio',
+          audio_url: audioUrl,
+          text: parsed.text,
+          action_id: parsed.action_id,
+          expression: parsed.expression,
+          expression_weight: parsed.expression_weight,
+        })
+        // Send to ALL clients (including sender, so the frontend gets it)
+        for (const client of clients) {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(audioMsg)
+          }
+        }
+        console.log(`TTS generated: ${audioUrl}`)
+      } catch (e: any) {
+        console.error('TTS error:', e.message)
+        ws.send(JSON.stringify({ type: 'tts_error', message: e.message }))
+        // Still broadcast original speak command for fallback lip sync
+        for (const client of clients) {
+          if (client !== ws && client.readyState === WebSocket.OPEN) {
+            client.send(msg)
+          }
+        }
+      }
+      return
+    }
+
+    // Handle user_speech — send to OpenClaw agent, get response, TTS, animate
+    if (parsed?.type === 'user_speech' && parsed.text) {
+      handleUserSpeech(parsed.text, ws).catch(e => {
+        console.error('User speech handling error:', e.message)
+        ws.send(JSON.stringify({ type: 'tts_error', message: e.message }))
+      })
+      return
+    }
+
+    // Don't re-broadcast ack/status messages — they're responses, not commands
+    if (parsed?.status) {
+      // Status messages are replies to the sender only; don't flood other clients
+      return
+    }
+
+    // Default: broadcast to all other clients
+    for (const client of clients) {
+      if (client !== ws && client.readyState === WebSocket.OPEN) {
+        client.send(msg)
+      }
+    }
+  })
+
+  ws.on('close', () => {
+    clients.delete(ws)
+    console.log(`Client disconnected (${clients.size} total)`)
+  })
+})
+
+console.log(`WebSocket server running on ws://localhost:${WS_PORT}`)
+
+// stdin relay
+process.stdin.setEncoding('utf-8')
+process.stdin.on('data', (input: string) => {
+  const trimmed = input.trim()
+  if (!trimmed) return
+  for (const client of clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(trimmed)
+    }
+  }
+  console.log(`Sent to ${clients.size} clients: ${trimmed}`)
+})
