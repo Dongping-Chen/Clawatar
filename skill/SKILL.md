@@ -1,118 +1,92 @@
 ---
 name: clawatar
-description: Control a 3D VRM avatar with animations, expressions, voice chat, and lip sync via a web-based viewer.
-allowed-tools: Bash(npm:*) Bash(npx:*) Bash(node:*) Read Write WebFetch
+description: Give your AI agent a 3D VRM avatar body with animations, expressions, voice chat, and lip sync. Use when the user wants a visual avatar, VRM viewer, avatar companion, VTuber-style character, or 3D character they can talk to. Installs a web-based viewer controllable via WebSocket.
 ---
 
 # Clawatar — 3D VRM Avatar Viewer
 
-Clawatar is a web-based VRM avatar viewer you can control in real time. You can play animations, set facial expressions, and make the avatar speak with TTS and lip sync — all via WebSocket commands.
+Give your AI agent a body. Web-based VRM avatar with 162 animations, expressions, TTS lip sync, and AI chat.
 
-## Starting the Viewer
+## Install & Start
 
 ```bash
-cd ~/.openclaw/workspace/clawatar && npm run start
+# Clone and install
+git clone https://github.com/Dongping-Chen/Clawatar.git ~/.openclaw/workspace/clawatar
+cd ~/.openclaw/workspace/clawatar && npm install
+
+# Start (Vite + WebSocket server)
+npm run start
 ```
 
-This starts the Vite dev server (http://localhost:3000) and the WebSocket server (ws://localhost:8765).
+Opens at http://localhost:3000 with WS control at ws://localhost:8765.
 
-## VRM Model
+Users must provide their own VRM model (drag & drop onto page, or set `model.url` in `clawatar.config.json`).
 
-Users must provide their own VRM model. They can:
-- Drag & drop a `.vrm` file onto the page
-- Set `model.url` in `clawatar.config.json`
-- Enter a URL in the UI Model panel
+## WebSocket Commands
 
-## WebSocket Protocol
-
-All commands are JSON messages sent to `ws://localhost:8765`.
+Send JSON to `ws://localhost:8765`:
 
 ### play_action
-
-Play an animation by ID (filename without `.vrma` extension):
-
 ```json
 {"type": "play_action", "action_id": "161_Waving"}
-{"type": "play_action", "action_id": "125_Laughing"}
-{"type": "play_action", "action_id": "40_Happy Idle"}
 ```
 
 ### set_expression
-
-Set a facial expression (weight 0.0–1.0, default 0.8):
-
 ```json
 {"type": "set_expression", "name": "happy", "weight": 0.8}
-{"type": "set_expression", "name": "sad", "weight": 0.6}
-{"type": "set_expression", "name": "angry", "weight": 0.7}
-{"type": "set_expression", "name": "surprised", "weight": 0.9}
-{"type": "set_expression", "name": "relaxed", "weight": 0.5}
 ```
+Expressions: `happy`, `angry`, `sad`, `surprised`, `relaxed`
 
-### speak
-
-Make the avatar speak with TTS, animation, and expression all at once (requires ElevenLabs API key):
-
+### speak (requires ElevenLabs API key)
 ```json
-{"type": "speak", "text": "Hello! Nice to meet you!", "action_id": "161_Waving", "expression": "happy"}
-{"type": "speak", "text": "Hmm, let me think about that...", "action_id": "88_Thinking", "expression": "relaxed"}
-{"type": "speak", "text": "That's so funny!", "action_id": "125_Laughing", "expression": "happy"}
+{"type": "speak", "text": "Hello!", "action_id": "161_Waving", "expression": "happy"}
 ```
 
 ### reset
-
-Reset avatar to idle state (clears expressions, plays idle animation):
-
 ```json
 {"type": "reset"}
 ```
 
-### get_state
+## Quick Animation Reference
 
-Get current avatar state:
+| Mood | Action ID |
+|------|-----------|
+| Greeting | `161_Waving` |
+| Happy | `116_Happy Hand Gesture` |
+| Thinking | `88_Thinking` |
+| Agreeing | `118_Head Nod Yes` |
+| Disagreeing | `144_Shaking Head No` |
+| Laughing | `125_Laughing` |
+| Sad | `142_Sad Idle` |
+| Dancing | `105_Dancing`, `143_Samba Dancing`, `164_Ymca Dance` |
+| Thumbs Up | `153_Standing Thumbs Up` |
+| Idle | `119_Idle` |
 
-```json
-{"type": "get_state"}
-```
+Full list: `public/animations/catalog.json` (162 animations)
 
-## Animation Mood Mapping
-
-Pick animations based on the conversation mood:
-
-| Mood | Action ID | Notes |
-|------|-----------|-------|
-| Greeting | `161_Waving` | Wave hello/goodbye |
-| Happy/Excited | `116_Happy Hand Gesture` or `40_Happy Idle` | Cheerful gestures |
-| Thinking | `88_Thinking` | Chin-stroke thinking pose |
-| Agreeing | `118_Head Nod Yes` | Nodding head |
-| Disagreeing | `144_Shaking Head No` | Shaking head no |
-| Laughing | `125_Laughing` | Laughter animation |
-| Sad | `142_Sad Idle` | Sad/down posture |
-| Dancing | `71_Hip Hop Dancing`, `15_Bellydancing`, `151_Swing Dancing`, etc. | Pick a random dance for fun |
-| Shrugging | `150_Shrugging` | "I don't know" gesture |
-| Pointing | `135_Pointing Forward` | Directing attention |
-| Waving | `161_Waving` | Hello/goodbye |
-| Clapping | `26_Clapping` | Applause |
-| Thumbs Up | `154_Standing Thumbs Up` | Approval |
-| Default/Idle | `119_Idle` | Neutral standing |
-
-## Sending Commands from the Agent
-
-Use Node.js with the `ws` package (already installed in the clawatar directory):
+## Sending Commands from Agent
 
 ```bash
-cd ~/.openclaw/workspace/clawatar && node -e "const W=require('ws');const s=new W('ws://localhost:8765');s.on('open',()=>{s.send(JSON.stringify({type:'speak',text:'Hello!',action_id:'161_Waving',expression:'happy'}));setTimeout(()=>s.close(),1000)})"
+cd ~/.openclaw/workspace/clawatar && node -e "
+const W=require('ws'),s=new W('ws://localhost:8765');
+s.on('open',()=>{s.send(JSON.stringify({type:'speak',text:'Hello!',action_id:'161_Waving',expression:'happy'}));setTimeout(()=>s.close(),1000)})
+"
 ```
 
-Or for a simple animation:
+## UI Features
 
-```bash
-cd ~/.openclaw/workspace/clawatar && node -e "const W=require('ws');const s=new W('ws://localhost:8765');s.on('open',()=>{s.send(JSON.stringify({type:'play_action',action_id:'125_Laughing'}));setTimeout(()=>s.close(),500)})"
-```
+- **Touch reactions**: Click avatar head/body for reactions
+- **Emotion bar**: Quick 😊😢😠😮😌💃 buttons
+- **Background scenes**: Sakura Garden, Night Sky, Café, Sunset
+- **Camera presets**: Face, Portrait, Full Body, Cinematic
+- **Voice chat**: Mic input → AI response → TTS lip sync
+
+## Config
+
+Edit `clawatar.config.json` for ports, voice settings, model URL. TTS requires ElevenLabs API key in env (`ELEVENLABS_API_KEY`) or `~/.openclaw/openclaw.json` under `skills.entries.sag.apiKey`.
 
 ## Notes
 
-- **163 animations** are available — see `public/animations/catalog.json` for the full list
-- Animations are converted from [Mixamo](https://www.mixamo.com/) — **non-commercial use only**, credit Mixamo
-- The viewer works standalone (animations, expressions, drag-drop) without OpenClaw or ElevenLabs
-- TTS/voice features require an ElevenLabs API key (set via installer or in `openclaw.json`)
+- Animations from [Mixamo](https://www.mixamo.com/) — credit required, non-commercial
+- VRM model not included (BYOM — Bring Your Own Model)
+- Works standalone without OpenClaw; AI chat is optional
