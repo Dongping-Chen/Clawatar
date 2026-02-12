@@ -169,7 +169,7 @@ function pickIdleAction(): string {
   const weights = getTimeAdjustedWeights()
   const roll = Math.random()
   let cumulative = 0
-  let category: keyof typeof IDLE_CATEGORIES = 'relaxed'
+  let category: keyof typeof IDLE_CATEGORIES = 'neutral'
   for (const [cat, weight] of weights) {
     cumulative += weight
     if (roll <= cumulative) {
