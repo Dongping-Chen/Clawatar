@@ -139,6 +139,34 @@ export function enableBloom() {
   window.addEventListener('resize', origResize)
 }
 
+export let roomBloomPass: UnrealBloomPass | null = null
+
+export function setupRoomBloom(): void {
+  const renderPass = new RenderPass(scene, camera)
+  const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.3, 0.4, 0.85
+  )
+  roomBloomPass = bloomPass
+  const outputPass = new OutputPass()
+  composer = new EffectComposer(renderer)
+  composer.addPass(renderPass)
+  composer.addPass(bloomPass)
+  composer.addPass(outputPass)
+
+  // Handle resize
+  const onResize = () => { composer?.setSize(window.innerWidth, window.innerHeight) }
+  window.addEventListener('resize', onResize)
+}
+
+export function teardownRoomBloom(): void {
+  if (composer) {
+    composer.dispose()
+    composer = null
+  }
+  roomBloomPass = null
+}
+
 export function enhanceLightingForEmbed() {
   // === "BATHED IN LIGHT" — Character pops against soft background ===
   // Goal: character should be noticeably brighter than background, like a spotlight on stage

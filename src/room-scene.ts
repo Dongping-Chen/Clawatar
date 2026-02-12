@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { scene, renderer, lightingRig, camera, controls } from './scene'
+import { scene, renderer, lightingRig, camera, controls, setupRoomBloom, teardownRoomBloom, roomBloomPass } from './scene'
 
 let roomGroup: THREE.Group
 let roomLights: THREE.Light[] = []
@@ -13,6 +13,53 @@ const ROOM_D = 3.5
 const ROOM_H = 3
 const HALF_W = ROOM_W / 2
 const HALF_D = ROOM_D / 2
+
+// === Animation references (populated during init) ===
+interface RoomAnimRefs {
+  cat: THREE.Group | null
+  clockHourHand: THREE.Mesh | null
+  clockMinuteHand: THREE.Mesh | null
+  fairyBulbs: THREE.Mesh[]
+  fairySprites: THREE.Sprite[]
+  curtainFolds: THREE.Mesh[]
+  laptopScreen: THREE.Mesh | null
+  steamParticles: THREE.Mesh[]
+  mugPosition: THREE.Vector3
+  plantLeaves: THREE.Mesh[]
+  catEars: THREE.Mesh[]
+  lightShaft: THREE.Group | null
+  dustMotes: THREE.Points | null
+  dustVelocities: Float32Array | null
+}
+
+const animRefs: RoomAnimRefs = {
+  cat: null, clockHourHand: null, clockMinuteHand: null,
+  fairyBulbs: [], fairySprites: [], curtainFolds: [], laptopScreen: null,
+  steamParticles: [], mugPosition: new THREE.Vector3(),
+  plantLeaves: [], catEars: [],
+  lightShaft: null, dustMotes: null, dustVelocities: null,
+}
+
+// === Seeded random for deterministic books ===
+function seededRandom(seed: number): () => number {
+  let s = seed
+  return () => {
+    s = (s * 16807 + 0) % 2147483647
+    return (s - 1) / 2147483646
+  }
+}
+
+// === Toon material for anime-style furniture ===
+const toonGradient = new THREE.DataTexture(
+  new Uint8Array([80, 160, 255]), 3, 1, THREE.RedFormat
+)
+toonGradient.minFilter = THREE.NearestFilter
+toonGradient.magFilter = THREE.NearestFilter
+toonGradient.needsUpdate = true
+
+function toonMat(color: number, opts: Partial<THREE.MeshToonMaterialParameters> = {}): THREE.MeshToonMaterial {
+  return new THREE.MeshToonMaterial({ color, gradientMap: toonGradient, ...opts })
+}
 
 function mat(color: number, opts: Partial<THREE.MeshStandardMaterialParameters> = {}): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({ color, ...opts })
@@ -39,7 +86,70 @@ function addEdgeOutline(mesh: THREE.Mesh, color = 0x000000, opacity = 0.08): voi
   mesh.add(line)
 }
 
-function createFloor(): THREE.Mesh {
+function createWindowLightShaft(): THREE.Group {
+  const group = new THREE.Group()
+  group.name = 'light-shaft'
+
+  const shaftMat = new THREE.MeshBasicMaterial({
+    color: 0xfff5d4,
+    transparent: true,
+    opacity: 0.06,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  })
+
+  for (let i = 0; i < 4; i++) {
+    const plane = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.4, 2.5),
+      shaftMat.clone()
+    )
+    plane.position.set(0, 1.5, -HALF_D + 1.0)
+    plane.rotation.x = -0.3
+    plane.rotation.y = (i - 1.5) * 0.15
+    plane.renderOrder = 999
+    group.add(plane)
+  }
+
+  animRefs.lightShaft = group
+  return group
+}
+
+function createDustMotes(): THREE.Points {
+  const count = 60
+  const positions = new Float32Array(count * 3)
+  const velocities = new Float32Array(count * 3)
+
+  for (let i = 0; i < count; i++) {
+    positions[i * 3] = (Math.random() - 0.5) * 2.0
+    positions[i * 3 + 1] = Math.random() * 2.5 + 0.3
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 2.0
+    velocities[i * 3] = (Math.random() - 0.5) * 0.002
+    velocities[i * 3 + 1] = (Math.random() - 0.5) * 0.001
+    velocities[i * 3 + 2] = (Math.random() - 0.5) * 0.002
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+
+  const material = new THREE.PointsMaterial({
+    color: 0xfff8e0,
+    size: 0.015,
+    transparent: true,
+    opacity: 0.4,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  })
+
+  const points = new THREE.Points(geometry, material)
+  points.name = 'dust-motes'
+  animRefs.dustMotes = points
+  animRefs.dustVelocities = velocities
+  return points
+}
+
+function createFloor(): THREE.Group {
+  const group = new THREE.Group()
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(ROOM_W, ROOM_D),
     mat(0xc49a6c, { roughness: 0.75, transparent: true, side: THREE.DoubleSide })
@@ -48,7 +158,25 @@ function createFloor(): THREE.Mesh {
   floor.rotation.x = -Math.PI / 2
   floor.position.set(0, 0, 0)
   floor.receiveShadow = true
-  return floor
+  group.add(floor)
+
+  // Wood plank gaps
+  const gapMat = mat(0x8a6a4a, { roughness: 0.9 })
+  const plankWidth = 0.4
+  for (let i = -Math.floor(ROOM_W / plankWidth / 2); i <= Math.floor(ROOM_W / plankWidth / 2); i++) {
+    const gap = new THREE.Mesh(new THREE.PlaneGeometry(0.008, ROOM_D), gapMat)
+    gap.rotation.x = -Math.PI / 2
+    gap.position.set(i * plankWidth, 0.001, 0)
+    group.add(gap)
+  }
+  // Cross gaps every ~0.8m
+  for (let z = -HALF_D + 0.4; z < HALF_D; z += 0.8) {
+    const gap = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_W, 0.005), gapMat)
+    gap.rotation.x = -Math.PI / 2
+    gap.position.set(0, 0.001, z)
+    group.add(gap)
+  }
+  return group
 }
 
 function createCeiling(): THREE.Group {
@@ -201,6 +329,76 @@ function createWalls(): THREE.Group {
     walls.add(stripe)
   }
 
+  // Wallpaper dot pattern on left wall
+  const dotMat = new THREE.MeshBasicMaterial({ color: 0xe0d5c8, transparent: true, opacity: 0.15 })
+  for (let row = 0; row < 12; row++) {
+    for (let col = 0; col < 14; col++) {
+      const dot = new THREE.Mesh(new THREE.CircleGeometry(0.012, 6), dotMat)
+      dot.position.set(-HALF_W + 0.06, 0.25 + row * 0.22, -HALF_D + 0.25 + col * 0.22)
+      dot.rotation.y = Math.PI / 2
+      walls.add(dot)
+    }
+  }
+
+  // Picture rail molding near ceiling (all 3 walls)
+  const moldingMat = mat(0xd4b08c, { roughness: 0.6 })
+  const moldBack = box(ROOM_W, 0.03, 0.02, moldingMat)
+  moldBack.position.set(0, ROOM_H - 0.15, -HALF_D + 0.06)
+  moldBack.castShadow = false
+  walls.add(moldBack)
+  const moldLeft = box(0.02, 0.03, ROOM_D, moldingMat)
+  moldLeft.position.set(-HALF_W + 0.06, ROOM_H - 0.15, 0)
+  moldLeft.castShadow = false
+  walls.add(moldLeft)
+  const moldRight = box(0.02, 0.03, ROOM_D, moldingMat)
+  moldRight.position.set(HALF_W - 0.06, ROOM_H - 0.15, 0)
+  moldRight.castShadow = false
+  walls.add(moldRight)
+
+  // Power outlet on right wall
+  const outletPlate = box(0.04, 0.06, 0.008, mat(0xf0ece8, { roughness: 0.5 }))
+  outletPlate.position.set(HALF_W - 0.06, 0.3, 0.8)
+  outletPlate.rotation.y = -Math.PI / 2
+  walls.add(outletPlate)
+  for (const dy of [-0.012, 0.012]) {
+    const socket = box(0.015, 0.008, 0.003, mat(0x888888))
+    socket.position.set(HALF_W - 0.055, 0.3 + dy, 0.8)
+    socket.rotation.y = -Math.PI / 2
+    walls.add(socket)
+  }
+
+  // Windowsill potted plant
+  const sillPot = cyl(0.03, 0.025, 0.05, mat(0xc86040, { roughness: 0.8 }))
+  sillPot.position.set(0.35, 1.2 + 0.025, -HALF_D + 0.08)
+  walls.add(sillPot)
+  for (let i = 0; i < 4; i++) {
+    const lf = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 4), mat(0x5a9e5a, { roughness: 0.8 }))
+    const a = (i / 4) * Math.PI * 2
+    lf.position.set(0.35 + Math.cos(a) * 0.02, 1.2 + 0.06 + i * 0.01, -HALF_D + 0.08 + Math.sin(a) * 0.02)
+    walls.add(lf)
+  }
+
+  // Window condensation (frosted patch)
+  const condensation = new THREE.Mesh(
+    new THREE.CircleGeometry(0.15, 16),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.08 })
+  )
+  condensation.position.set(-0.3, 1.2 + 0.4, -HALF_D + 0.02)
+  walls.add(condensation)
+
+  // Curtain bulge (overlapping boxes for fabric effect)
+  for (const side of [-1, 1]) {
+    const cx = side * (0.7 + 0.18)
+    for (let i = 0; i < 3; i++) {
+      const fold = box(0.06, 0.3, 0.03, mat(0xf0e0e8, { roughness: 0.95 }))
+      fold.position.set(cx, 1.2 + 0.6 - i * 0.35, -HALF_D + 0.08 + (i % 2) * 0.015)
+      fold.castShadow = false
+      fold.name = 'curtain-fold'
+      animRefs.curtainFolds.push(fold)
+      walls.add(fold)
+    }
+  }
+
   return walls
 }
 
@@ -209,7 +407,7 @@ function createDesk(): THREE.Group {
   const woodMat = mat(0xd4b08c, { roughness: 0.75 })
   const deskY = 0.72, deskW = 1.4, deskD = 0.6, deskT = 0.04
 
-  const surface = box(deskW, deskT, deskD, woodMat)
+  const surface = box(deskW, deskT, deskD, toonMat(0xd4b08c))
   surface.position.y = deskY
   addEdgeOutline(surface)
   desk.add(surface)
@@ -232,11 +430,13 @@ function createDesk(): THREE.Group {
   }))
   laptopScreen.position.set(-0.2, deskY + deskT / 2 + 0.14, -0.17)
   laptopScreen.rotation.x = -0.15
+  animRefs.laptopScreen = laptopScreen
   desk.add(laptopScreen)
 
   // Coffee mug
   const mug = cyl(0.03, 0.025, 0.08, mat(0xffb0c8, { roughness: 0.6 }))
   mug.position.set(0.35, deskY + deskT / 2 + 0.04, -0.1)
+  animRefs.mugPosition.set(0.35, deskY + deskT / 2 + 0.08, -0.1)
   desk.add(mug)
 
   // Books stack
@@ -264,6 +464,63 @@ function createDesk(): THREE.Group {
   lampShade.castShadow = true
   desk.add(lampShade)
 
+  // Desk drawer
+  const drawer = box(0.5, 0.08, deskD - 0.04, mat(0xc8a070, { roughness: 0.75 }))
+  drawer.position.set(0, deskY - 0.08, 0)
+  addEdgeOutline(drawer)
+  desk.add(drawer)
+  const handle = box(0.06, 0.015, 0.015, mat(0x888888, { metalness: 0.5 }))
+  handle.position.set(0, deskY - 0.04, deskD / 2 - 0.02)
+  desk.add(handle)
+
+  // Sticky notes
+  const stickyColors = [0xffff88, 0xff88cc, 0x88ddff]
+  for (let i = 0; i < 3; i++) {
+    const sticky = box(0.05, 0.001, 0.05, mat(stickyColors[i], { roughness: 0.9 }))
+    sticky.position.set(0.15 + i * 0.06, deskY + deskT / 2 + 0.001, 0.15)
+    sticky.rotation.y = (i - 1) * 0.3
+    desk.add(sticky)
+  }
+
+  // Mousepad
+  const mousepad = box(0.2, 0.003, 0.18, mat(0x333340, { roughness: 0.9 }))
+  mousepad.position.set(0.15, deskY + deskT / 2 + 0.002, -0.05)
+  desk.add(mousepad)
+
+  // Small succulent
+  const succPot = cyl(0.02, 0.018, 0.03, mat(0xd4a06a, { roughness: 0.8 }))
+  succPot.position.set(-0.55, deskY + deskT / 2 + 0.015, 0.1)
+  desk.add(succPot)
+  for (let i = 0; i < 5; i++) {
+    const petal = new THREE.Mesh(new THREE.SphereGeometry(0.012, 6, 4), mat(0x7ab87a, { roughness: 0.8 }))
+    const a = (i / 5) * Math.PI * 2
+    petal.position.set(-0.55 + Math.cos(a) * 0.012, deskY + deskT / 2 + 0.035, 0.1 + Math.sin(a) * 0.012)
+    desk.add(petal)
+  }
+
+  // Headphones
+  const hpMat = mat(0x333333, { roughness: 0.4, metalness: 0.3 })
+  const hpBand = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.005, 8, 16, Math.PI), hpMat)
+  hpBand.position.set(0.45, deskY + deskT / 2 + 0.06, -0.15)
+  hpBand.rotation.z = Math.PI
+  desk.add(hpBand)
+  for (const side of [-1, 1]) {
+    const cup = cyl(0.025, 0.025, 0.03, hpMat)
+    cup.position.set(0.45 + side * 0.06, deskY + deskT / 2 + 0.015, -0.15)
+    desk.add(cup)
+  }
+
+  // Keyboard dots on laptop base
+  const kbDotMat = mat(0x666666, { roughness: 0.3 })
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 8; c++) {
+      const dot = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.002, 0.012), kbDotMat)
+      dot.position.set(-0.2 - 0.13 + c * 0.035, deskY + deskT / 2 + 0.016, -0.05 - 0.06 + r * 0.035)
+      dot.castShadow = false
+      desk.add(dot)
+    }
+  }
+
   // Position: against back wall, shifted left
   desk.position.set(-0.3, 0, -HALF_D + 0.35)
   return desk
@@ -274,12 +531,12 @@ function createChair(): THREE.Group {
   const legMat = mat(0x444444, { metalness: 0.4, roughness: 0.5 })
   const seatY = 0.42, seatW = 0.42, seatD = 0.4
 
-  const seat = box(seatW, 0.06, seatD, mat(0xffcad4, { roughness: 0.9 }))
+  const seat = box(seatW, 0.06, seatD, toonMat(0xffcad4))
   seat.position.y = seatY
   addEdgeOutline(seat)
   chair.add(seat)
 
-  const back = box(seatW, 0.4, 0.04, mat(0xffcad4, { roughness: 0.9 }))
+  const back = box(seatW, 0.4, 0.04, toonMat(0xffcad4))
   back.position.set(0, seatY + 0.23, -seatD / 2 + 0.02)
   chair.add(back)
 
@@ -298,8 +555,8 @@ function createBed(): THREE.Group {
   const bed = new THREE.Group()
   const bedW = 1.2, bedH = 0.35, bedD = 2.0
 
-  // Frame — slightly warmer wood
-  const frame = box(bedW, bedH, bedD, mat(0xd9b892, { roughness: 0.75 }))
+  // Frame — toon shaded for anime style
+  const frame = box(bedW, bedH, bedD, toonMat(0xd9b892))
   frame.position.set(0, bedH / 2, 0)
   addEdgeOutline(frame)
   bed.add(frame)
@@ -318,7 +575,7 @@ function createBed(): THREE.Group {
   pillow2.rotation.y = 0.15
   bed.add(pillow2)
 
-  const headboard = box(bedW, 0.6, 0.06, mat(0xb8895e, { roughness: 0.7 }))
+  const headboard = box(bedW, 0.6, 0.06, toonMat(0xb8895e))
   headboard.position.set(0, bedH + 0.3, -bedD / 2)
   addEdgeOutline(headboard)
   bed.add(headboard)
@@ -386,7 +643,55 @@ function createBed(): THREE.Group {
   // Position on bed
   catGroup.position.set(-0.2, bedH + 0.2, 0.3)
   catGroup.rotation.y = 0.3 // Slightly angled
+  animRefs.cat = catGroup
+  // Store ear refs for twitch animation
+  catGroup.children.forEach(child => {
+    if (child instanceof THREE.Mesh && child.geometry instanceof THREE.ConeGeometry && child.position.y > 0.08) {
+      animRefs.catEars.push(child)
+    }
+  })
   bed.add(catGroup)
+
+  // Folded throw blanket at foot of bed
+  const throwBlanket = box(bedW - 0.2, 0.04, 0.35, mat(0xb8a0d0, { roughness: 0.95 }))
+  throwBlanket.position.set(0.05, bedH + 0.16, bedD / 2 - 0.2)
+  throwBlanket.rotation.y = 0.08
+  bed.add(throwBlanket)
+
+  // Star plushie
+  const starGroup = new THREE.Group()
+  const starMat = toonMat(0xfff06a)
+  const starBody = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), starMat)
+  starGroup.add(starBody)
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 - Math.PI / 2
+    const point = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.05, 4), starMat)
+    point.position.set(Math.cos(a) * 0.07, Math.sin(a) * 0.07, 0)
+    point.rotation.z = a + Math.PI / 2
+    starGroup.add(point)
+  }
+  // Eyes
+  for (const side of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.008, 4, 4), mat(0x333333))
+    eye.position.set(side * 0.02, 0.01, 0.065)
+    starGroup.add(eye)
+  }
+  starGroup.position.set(0.3, bedH + 0.22, -bedD / 2 + 0.5)
+  starGroup.rotation.x = -0.3
+  bed.add(starGroup)
+
+  // Bed skirt
+  const skirtMat = mat(0xf0d0e8, { roughness: 0.95 })
+  const skirtFront = box(bedW + 0.02, 0.12, 0.01, skirtMat)
+  skirtFront.position.set(0, 0.06, bedD / 2)
+  skirtFront.castShadow = false
+  bed.add(skirtFront)
+  for (const side of [-1, 1]) {
+    const skirtSide = box(0.01, 0.12, bedD + 0.02, skirtMat)
+    skirtSide.position.set(side * bedW / 2, 0.06, 0)
+    skirtSide.castShadow = false
+    bed.add(skirtSide)
+  }
 
   // Bed against right wall, headboard toward back-right
   // Rotated so length runs along Z axis against right wall
@@ -397,7 +702,7 @@ function createBed(): THREE.Group {
 
 function createSlippers(): THREE.Group {
   const group = new THREE.Group()
-  const slipperMat = mat(0xffb8c8, { roughness: 0.9 })
+  const slipperMat = toonMat(0xffb8c8)
   for (const side of [-1, 1]) {
     const slipper = new THREE.Mesh(
       new THREE.SphereGeometry(0.07, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2),
@@ -434,12 +739,14 @@ function createWallClock(): THREE.Group {
   hourHand.position.set(0, 0.03, 0.01)
   hourHand.rotation.z = -0.8
   hourHand.castShadow = false
+  animRefs.clockHourHand = hourHand
   group.add(hourHand)
   // Minute hand
   const minHand = box(0.008, 0.09, 0.005, mat(0x333333))
   minHand.position.set(0, 0.04, 0.012)
   minHand.rotation.z = 0.5
   minHand.castShadow = false
+  animRefs.clockMinuteHand = minHand
   group.add(minHand)
 
   // Above desk on back wall
@@ -506,11 +813,11 @@ function createMirror(): THREE.Group {
 function createFloorLamp(): THREE.Group {
   const group = new THREE.Group()
   // Base
-  const base = cyl(0.08, 0.08, 0.02, mat(0x555555, { metalness: 0.5 }))
+  const base = cyl(0.08, 0.08, 0.02, toonMat(0x555555))
   base.position.y = 0.01
   group.add(base)
   // Pole
-  const pole = cyl(0.015, 0.015, 1.5, mat(0x555555, { metalness: 0.5 }))
+  const pole = cyl(0.015, 0.015, 1.5, toonMat(0x555555))
   pole.position.y = 0.77
   group.add(pole)
   // Shade
@@ -555,7 +862,7 @@ function createCatFigure(): THREE.Group {
 function createThrowPillow(): THREE.Group {
   const group = new THREE.Group()
   // Cat-shaped pillow (cute neko cushion)
-  const pillowMat = mat(0xffd4a8, { roughness: 0.95 }) // Warm orange-cream
+  const pillowMat = toonMat(0xffd4a8) // Warm orange-cream
   // Body — flattened sphere
   const body = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 8), pillowMat)
   body.scale.set(1.2, 0.5, 1.0)
@@ -619,14 +926,15 @@ function createSideTable(): THREE.Group {
   const tW = 0.35, tD = 0.3, tH = 0.45, tT = 0.03
 
   // Top
-  const top = box(tW, tT, tD, woodMat)
+  const top = box(tW, tT, tD, toonMat(0xc8a070))
   top.position.y = tH
   addEdgeOutline(top)
   table.add(top)
 
   // Legs
+  const legMat = toonMat(0xc8a070)
   for (const [x, z] of [[-0.14, -0.12], [0.14, -0.12], [-0.14, 0.12], [0.14, 0.12]]) {
-    const leg = cyl(0.015, 0.015, tH, woodMat)
+    const leg = cyl(0.015, 0.015, tH, legMat)
     leg.position.set(x, tH / 2, z)
     table.add(leg)
   }
@@ -653,7 +961,8 @@ function createSideTable(): THREE.Group {
 
 function createBookshelf(): THREE.Group {
   const shelf = new THREE.Group()
-  const shelfMat = mat(0xc49a6c, { roughness: 0.7 })
+  const shelfMat = toonMat(0xc49a6c)
+  const rand = seededRandom(42)
   const sw = 0.8, sd = 0.3, sh = 2.2, thick = 0.03
 
   for (const x of [-sw / 2, sw / 2]) {
@@ -679,18 +988,44 @@ function createBookshelf(): THREE.Group {
     const baseY = shelfYs[row] + thick / 2
     let x = -sw / 2 + 0.08
     while (x < sw / 2 - 0.05) {
-      const bw = 0.03 + Math.random() * 0.04
-      const bh = 0.3 + Math.random() * 0.15
-      const bd = 0.18 + Math.random() * 0.06
-      const bookColor = bookColors[Math.floor(Math.random() * bookColors.length)]
+      const bw = 0.03 + rand() * 0.04
+      const bh = 0.3 + rand() * 0.15
+      const bd = 0.18 + rand() * 0.06
+      const bookColor = bookColors[Math.floor(rand() * bookColors.length)]
       const b = box(bw, bh, bd, mat(bookColor, { roughness: 0.85 }))
       b.position.set(x + bw / 2, baseY + bh / 2, 0.02)
-      b.rotation.z = (Math.random() - 0.5) * 0.05
+      b.rotation.z = (rand() - 0.5) * 0.05
       b.castShadow = false
       shelf.add(b)
       x += bw + 0.005
     }
   }
+
+  // Leaning books on shelf 2
+  const leanColors = [0xff9999, 0x99bbff, 0xddaa77]
+  for (let i = 0; i < 3; i++) {
+    const lb = box(0.04, 0.28, 0.18, mat(leanColors[i], { roughness: 0.85 }))
+    lb.position.set(-sw / 2 + 0.6 + i * 0.05, shelfYs[2] + thick / 2 + 0.14, 0.02)
+    lb.rotation.z = 0.3 - i * 0.15
+    lb.castShadow = false
+    shelf.add(lb)
+  }
+
+  // Small framed photo on shelf 3
+  const photoFrame = box(0.08, 0.1, 0.015, mat(0xd4b08c, { roughness: 0.6 }))
+  photoFrame.position.set(0.2, shelfYs[3] + thick / 2 + 0.05, 0.08)
+  shelf.add(photoFrame)
+  const photoArt = box(0.06, 0.075, 0.01, mat(0xffc8dd, { roughness: 0.9 }))
+  photoArt.position.set(0.2, shelfYs[3] + thick / 2 + 0.05, 0.09)
+  shelf.add(photoArt)
+
+  // Tiny cactus on top shelf
+  const cactusPot = cyl(0.02, 0.018, 0.025, mat(0xc86040, { roughness: 0.8 }))
+  cactusPot.position.set(0.25, sh + 0.013, 0)
+  shelf.add(cactusPot)
+  const cactusBody = cyl(0.012, 0.012, 0.04, mat(0x4a8a4a, { roughness: 0.8 }), 6)
+  cactusBody.position.set(0.25, sh + 0.045, 0)
+  shelf.add(cactusBody)
 
   // Plant on top
   const pot = cyl(0.05, 0.04, 0.08, mat(0x8B5E3C, { roughness: 0.8 }))
@@ -716,7 +1051,7 @@ function createRug(): THREE.Group {
   // Outer rug ring — darker edge
   const outer = new THREE.Mesh(
     new THREE.CircleGeometry(0.75, 32),
-    mat(0xeab8c8, { roughness: 0.95 })
+    toonMat(0xeab8c8)
   )
   outer.rotation.x = -Math.PI / 2
   outer.position.set(0, 0.004, 0)
@@ -725,11 +1060,23 @@ function createRug(): THREE.Group {
   // Inner rug — lighter center
   const inner = new THREE.Mesh(
     new THREE.CircleGeometry(0.55, 32),
-    mat(0xffd0e0, { roughness: 0.95 })
+    toonMat(0xffd0e0)
   )
   inner.rotation.x = -Math.PI / 2
   inner.position.set(0, 0.005, 0)
   group.add(inner)
+
+  // Rug pattern — concentric rings
+  const ringColors = [0xd8a0b8, 0xecc0d0, 0xd098b0]
+  for (let i = 0; i < 3; i++) {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.15 + i * 0.12, 0.18 + i * 0.12, 32),
+      toonMat(ringColors[i])
+    )
+    ring.rotation.x = -Math.PI / 2
+    ring.position.set(0, 0.006, 0)
+    group.add(ring)
+  }
 
   // Center at origin (character's spot)
   group.position.set(0, 0, 0)
@@ -748,7 +1095,21 @@ function createFairyLights(): THREE.Group {
       new THREE.MeshStandardMaterial({ color: 0xffe8b0, emissive: 0xffe8b0, emissiveIntensity: 1.0 })
     )
     bulb.position.set(x, y, -HALF_D + 0.15)
+    animRefs.fairyBulbs.push(bulb)
     group.add(bulb)
+
+    // Glow halo sprite
+    const spriteMat = new THREE.SpriteMaterial({
+      color: 0xffe8b0,
+      transparent: true,
+      opacity: 0.3,
+      blending: THREE.AdditiveBlending,
+    })
+    const sprite = new THREE.Sprite(spriteMat)
+    sprite.scale.set(0.06, 0.06, 1)
+    sprite.position.set(x, y, -HALF_D + 0.15)
+    animRefs.fairySprites.push(sprite)
+    group.add(sprite)
   }
   return group
 }
@@ -776,6 +1137,7 @@ function createCornerPlant(): THREE.Group {
     leaf.rotation.x = (Math.random() - 0.5) * 0.3
     leaf.rotation.z = (Math.random() - 0.5) * 0.3
     leaf.castShadow = true
+    animRefs.plantLeaves.push(leaf)
     plant.add(leaf)
   }
 
@@ -795,8 +1157,8 @@ function createPictureFrames(): THREE.Group {
 
   for (let i = 0; i < positions.length; i++) {
     const [x, y, z, wall] = positions[i]
-    const frameMat = mat(0xd4b08c, { roughness: 0.6 })
-    const artMat = mat(frameColors[i], { roughness: 0.9 })
+    const frameMat = toonMat(0xd4b08c)
+    const artMat = toonMat(frameColors[i])
 
     const frameGroup = new THREE.Group()
     const frame = box(0.28, 0.22, 0.02, frameMat)
@@ -846,6 +1208,74 @@ function createPoster(): THREE.Group {
   star.rotation.y = -Math.PI / 2
   group.add(star)
 
+  return group
+}
+
+function createTrashCan(): THREE.Group {
+  const group = new THREE.Group()
+  const canMat = toonMat(0xe8e0d8)
+  const can = cyl(0.08, 0.07, 0.22, canMat, 12)
+  can.position.y = 0.11
+  group.add(can)
+  // Rim
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.08, 0.008, 8, 12), toonMat(0xe8e0d8))
+  rim.position.y = 0.22
+  rim.rotation.x = Math.PI / 2
+  group.add(rim)
+  // Near desk
+  group.position.set(-0.9, 0, -HALF_D + 0.8)
+  return group
+}
+
+function createWallShelf(): THREE.Group {
+  const group = new THREE.Group()
+  const shelfBoard = box(0.4, 0.02, 0.12, toonMat(0xc49a6c))
+  group.add(shelfBoard)
+  // Brackets
+  for (const x of [-0.15, 0.15]) {
+    const bracket = box(0.02, 0.08, 0.1, mat(0x888888, { metalness: 0.4 }))
+    bracket.position.set(x, -0.04, 0)
+    group.add(bracket)
+  }
+  // Small items on shelf
+  const miniBook = box(0.04, 0.06, 0.03, mat(0xffb3c6, { roughness: 0.85 }))
+  miniBook.position.set(-0.1, 0.04, 0)
+  group.add(miniBook)
+  const miniVase = cyl(0.015, 0.012, 0.04, mat(0x88bbdd, { roughness: 0.6 }))
+  miniVase.position.set(0.08, 0.03, 0)
+  group.add(miniVase)
+  // On right wall near door
+  group.position.set(HALF_W - 0.06, 1.6, -HALF_D + 0.8)
+  group.rotation.y = -Math.PI / 2
+  return group
+}
+
+function createAOCorners(): THREE.Group {
+  const group = new THREE.Group()
+  const aoMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.06 })
+  // Floor-wall corners
+  const corners: [number, number, number, number, number][] = [
+    [ROOM_W, 0.15, -HALF_D, 0, 0.075],  // back
+    [0.15, ROOM_D, -HALF_W, 0.075, 0],   // left (rotated)
+    [0.15, ROOM_D, HALF_W, 0.075, 0],    // right
+  ]
+  // Back floor corner
+  const aoBack = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_W, 0.15), aoMat)
+  aoBack.rotation.x = -Math.PI / 2
+  aoBack.position.set(0, 0.002, -HALF_D + 0.075)
+  group.add(aoBack)
+  // Left floor corner
+  const aoLeft = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_D, 0.15), aoMat)
+  aoLeft.rotation.x = -Math.PI / 2
+  aoLeft.rotation.z = Math.PI / 2
+  aoLeft.position.set(-HALF_W + 0.075, 0.002, 0)
+  group.add(aoLeft)
+  // Right floor corner
+  const aoRight = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_D, 0.15), aoMat)
+  aoRight.rotation.x = -Math.PI / 2
+  aoRight.rotation.z = Math.PI / 2
+  aoRight.position.set(HALF_W - 0.075, 0.002, 0)
+  group.add(aoRight)
   return group
 }
 
@@ -934,6 +1364,12 @@ export function isPositionSafe(x: number, z: number): boolean {
 // === Init & mode switching ===
 
 export function initRoomScene(): void {
+  // Reset animation refs
+  animRefs.cat = null; animRefs.clockHourHand = null; animRefs.clockMinuteHand = null
+  animRefs.fairyBulbs = []; animRefs.fairySprites = []; animRefs.curtainFolds = []; animRefs.laptopScreen = null
+  animRefs.steamParticles = []; animRefs.plantLeaves = []; animRefs.catEars = []
+  animRefs.lightShaft = null; animRefs.dustMotes = null; animRefs.dustVelocities = null
+
   roomGroup = new THREE.Group()
   roomGroup.name = 'room-group'
   roomGroup.visible = false
@@ -961,6 +1397,20 @@ export function initRoomScene(): void {
   roomGroup.add(createCatFigure())
   roomGroup.add(createThrowPillow())
   roomGroup.add(createPhotoString())
+  roomGroup.add(createTrashCan())
+  roomGroup.add(createWallShelf())
+  roomGroup.add(createAOCorners())
+  roomGroup.add(createWindowLightShaft())
+  roomGroup.add(createDustMotes())
+
+  // Create steam particles for coffee mug
+  const steamMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3 })
+  for (let i = 0; i < 4; i++) {
+    const steam = new THREE.Mesh(new THREE.SphereGeometry(0.008, 6, 4), steamMat.clone())
+    steam.visible = false // Will be shown in room mode
+    roomGroup.add(steam)
+    animRefs.steamParticles.push(steam)
+  }
 
   scene.add(roomGroup)
 
@@ -1021,6 +1471,9 @@ export function enableRoomMode(): void {
   controls.enablePan = true
   controls.update()
 
+  // Enable bloom post-processing (safe with solid background)
+  setupRoomBloom()
+
   setRoomTheme(currentTheme)
 }
 
@@ -1051,6 +1504,9 @@ export function disableRoomMode(): void {
     }
   })
 
+  // Disable bloom
+  teardownRoomBloom()
+
   // Remove fog
   scene.fog = null
 
@@ -1075,14 +1531,125 @@ export function isRoomMode(): boolean {
   return _isRoomMode
 }
 
+// Track cat ear twitch timing
+let nextEarTwitch = 5
+let earTwitchStart = -1
+
 /** Update room animations (call every frame) */
 export function updateRoom(elapsed: number): void {
   if (!_isRoomMode || !roomGroup) return
-  // Cat breathing animation — subtle scale pulse on body
-  const cat = roomGroup.getObjectByName('bed-cat') as THREE.Group | undefined
-  if (cat && cat.children[0]) {
-    const breathe = 1.0 + Math.sin(elapsed * 1.5) * 0.03 // Gentle breathing
-    cat.children[0].scale.set(1.3, 0.55 * breathe, 1.0)
+
+  // Cat breathing animation
+  if (animRefs.cat && animRefs.cat.children[0]) {
+    const breathe = 1.0 + Math.sin(elapsed * 1.5) * 0.03
+    animRefs.cat.children[0].scale.set(1.3, 0.55 * breathe, 1.0)
+  }
+
+  // Cat ear twitch — every 5-8 seconds
+  if (elapsed > nextEarTwitch && animRefs.catEars.length > 0) {
+    earTwitchStart = elapsed
+    nextEarTwitch = elapsed + 5 + Math.random() * 3
+  }
+  if (earTwitchStart > 0 && animRefs.catEars[0]) {
+    const twitchT = elapsed - earTwitchStart
+    if (twitchT < 0.3) {
+      const angle = Math.sin(twitchT * Math.PI / 0.3) * 0.25
+      animRefs.catEars[0].rotation.x = angle
+    } else {
+      animRefs.catEars[0].rotation.x = 0
+      earTwitchStart = -1
+    }
+  }
+
+  // Wall clock — real time (direct refs, no traversal)
+  const now = new Date()
+  const hours = now.getHours() % 12 + now.getMinutes() / 60
+  const minutes = now.getMinutes() + now.getSeconds() / 60
+  if (animRefs.clockHourHand) animRefs.clockHourHand.rotation.z = -(hours / 12) * Math.PI * 2
+  if (animRefs.clockMinuteHand) animRefs.clockMinuteHand.rotation.z = -(minutes / 60) * Math.PI * 2
+
+  // Fairy light twinkle (direct refs)
+  for (let i = 0; i < animRefs.fairyBulbs.length; i++) {
+    const m = animRefs.fairyBulbs[i].material as THREE.MeshStandardMaterial
+    m.emissiveIntensity = 0.7 + 0.3 * Math.sin(elapsed * 2.5 + i * 1.7)
+  }
+
+  // Curtain sway (direct refs)
+  for (const fold of animRefs.curtainFolds) {
+    fold.position.z = -HALF_D + 0.08 + Math.sin(elapsed * 0.8 + fold.position.y * 3) * 0.005
+  }
+
+  // Laptop screen color shift (direct ref)
+  if (animRefs.laptopScreen) {
+    const m = animRefs.laptopScreen.material as THREE.MeshStandardMaterial
+    const hue = (elapsed * 0.05) % 1
+    m.emissive.setHSL(hue, 0.15, 0.85)
+  }
+
+  // Coffee mug steam — rising transparent spheres
+  // Mug is inside the desk group which is positioned at (-0.3, 0, -HALF_D + 0.35)
+  const deskOffset = new THREE.Vector3(-0.3, 0, -HALF_D + 0.35)
+  for (let i = 0; i < animRefs.steamParticles.length; i++) {
+    const steam = animRefs.steamParticles[i]
+    steam.visible = true
+    const phase = (elapsed * 0.4 + i * 0.25) % 1.0
+    const worldMugX = deskOffset.x + animRefs.mugPosition.x + (i - 1.5) * 0.008
+    const worldMugY = deskOffset.y + animRefs.mugPosition.y
+    const worldMugZ = deskOffset.z + animRefs.mugPosition.z
+    steam.position.set(
+      worldMugX + Math.sin(elapsed * 1.5 + i) * 0.005,
+      worldMugY + phase * 0.08,
+      worldMugZ
+    )
+    const steamMat = steam.material as THREE.MeshBasicMaterial
+    steamMat.opacity = 0.25 * (1 - phase)
+  }
+
+  // Plant leaf sway — gentle oscillation
+  for (let i = 0; i < animRefs.plantLeaves.length; i++) {
+    const leaf = animRefs.plantLeaves[i]
+    leaf.rotation.x = (leaf.userData.baseRotX ?? leaf.rotation.x) + Math.sin(elapsed * 0.6 + i * 1.2) * 0.04
+    leaf.rotation.z = (leaf.userData.baseRotZ ?? leaf.rotation.z) + Math.cos(elapsed * 0.5 + i * 0.8) * 0.03
+    // Store base rotations on first frame
+    if (leaf.userData.baseRotX === undefined) {
+      leaf.userData.baseRotX = leaf.rotation.x
+      leaf.userData.baseRotZ = leaf.rotation.z
+    }
+  }
+
+  // Light shaft breathing pulse
+  if (animRefs.lightShaft) {
+    const pulse = 0.04 + Math.sin(elapsed * 0.4) * 0.02
+    animRefs.lightShaft.children.forEach(child => {
+      const m = (child as THREE.Mesh).material as THREE.MeshBasicMaterial
+      m.opacity = currentTheme === 'night' ? 0.01 : pulse
+    })
+  }
+
+  // Fairy light sprite glow sync
+  for (let i = 0; i < animRefs.fairySprites.length; i++) {
+    const sm = animRefs.fairySprites[i].material as THREE.SpriteMaterial
+    sm.opacity = 0.2 + 0.15 * Math.sin(elapsed * 2.5 + i * 1.7)
+  }
+
+  // Dust motes drift
+  if (animRefs.dustMotes && animRefs.dustVelocities) {
+    const pos = animRefs.dustMotes.geometry.attributes.position as THREE.BufferAttribute
+    const vel = animRefs.dustVelocities
+    for (let i = 0; i < pos.count; i++) {
+      let x = pos.getX(i) + vel[i * 3]
+      let y = pos.getY(i) + vel[i * 3 + 1] + Math.sin(elapsed * 0.3 + i) * 0.0003
+      let z = pos.getZ(i) + vel[i * 3 + 2]
+      // Wrap around
+      if (x < -1.0) x = 1.0; if (x > 1.0) x = -1.0
+      if (y < 0.3) y = 2.8; if (y > 2.8) y = 0.3
+      if (z < -1.0) z = 1.0; if (z > 1.0) z = -1.0
+      pos.setXYZ(i, x, y, z)
+    }
+    pos.needsUpdate = true
+    // Hide in night theme
+    const dm = animRefs.dustMotes.material as THREE.PointsMaterial
+    dm.opacity = currentTheme === 'night' ? 0.1 : 0.4
   }
 }
 
@@ -1125,43 +1692,38 @@ export function updateRoomWallTransparency(): void {
   }
 }
 
+const THEME_CONFIG: Record<string, Record<string, number>> = {
+  cozy: {
+    'room-window-light': 1.5, 'room-desk-lamp': 0.8, 'room-fairy-light': 0.3,
+    'room-ambient': 0.4, 'room-hemi': 0.3, 'room-floor-bounce': 0.3,
+    'room-char-backlight': 0.5, 'room-floor-lamp': 0.4,
+  },
+  study: {
+    'room-window-light': 0.6, 'room-desk-lamp': 1.5, 'room-fairy-light': 0.15,
+    'room-ambient': 0.2, 'room-hemi': 0.15, 'room-floor-bounce': 0.15,
+    'room-char-backlight': 0.3, 'room-floor-lamp': 0.2,
+  },
+  night: {
+    'room-window-light': 0.15, 'room-desk-lamp': 0.5, 'room-fairy-light': 0.6,
+    'room-ambient': 0.15, 'room-hemi': 0.1, 'room-floor-bounce': 0.1,
+    'room-char-backlight': 0.2, 'room-floor-lamp': 0.6,
+  },
+}
+
 export function setRoomTheme(theme: 'cozy' | 'study' | 'night'): void {
   currentTheme = theme
   if (!_isRoomMode) return
 
   const windowGlow = roomGroup.getObjectByName('window-glow') as THREE.Mesh | undefined
+  const config = THEME_CONFIG[theme]
 
   for (const light of roomLights) {
-    if (theme === 'cozy') {
-      if (light.name === 'room-window-light') (light as THREE.DirectionalLight).intensity = 1.5
-      if (light.name === 'room-desk-lamp') (light as THREE.PointLight).intensity = 0.8
-      if (light.name === 'room-fairy-light') (light as THREE.PointLight).intensity = 0.3
-      if (light.name === 'room-ambient') (light as THREE.AmbientLight).intensity = 0.4
-      if (light.name === 'room-hemi') (light as THREE.HemisphereLight).intensity = 0.3
-      if (light.name === 'room-floor-bounce') (light as THREE.PointLight).intensity = 0.3
-      if (light.name === 'room-char-backlight') (light as THREE.SpotLight).intensity = 0.5
-      if (light.name === 'room-floor-lamp') (light as THREE.PointLight).intensity = 0.4
-    } else if (theme === 'study') {
-      if (light.name === 'room-window-light') (light as THREE.DirectionalLight).intensity = 0.6
-      if (light.name === 'room-desk-lamp') (light as THREE.PointLight).intensity = 1.5
-      if (light.name === 'room-fairy-light') (light as THREE.PointLight).intensity = 0.15
-      if (light.name === 'room-ambient') (light as THREE.AmbientLight).intensity = 0.2
-      if (light.name === 'room-hemi') (light as THREE.HemisphereLight).intensity = 0.15
-      if (light.name === 'room-floor-bounce') (light as THREE.PointLight).intensity = 0.15
-      if (light.name === 'room-char-backlight') (light as THREE.SpotLight).intensity = 0.3
-      if (light.name === 'room-floor-lamp') (light as THREE.PointLight).intensity = 0.2
-    } else if (theme === 'night') {
-      if (light.name === 'room-window-light') {
-        (light as THREE.DirectionalLight).intensity = 0.15
-        ;(light as THREE.DirectionalLight).color.set(0x4466aa)
-      }
-      if (light.name === 'room-desk-lamp') (light as THREE.PointLight).intensity = 0.5
-      if (light.name === 'room-fairy-light') (light as THREE.PointLight).intensity = 0.6
-      if (light.name === 'room-ambient') (light as THREE.AmbientLight).intensity = 0.15
-      if (light.name === 'room-hemi') (light as THREE.HemisphereLight).intensity = 0.1
-      if (light.name === 'room-floor-bounce') (light as THREE.PointLight).intensity = 0.1
-      if (light.name === 'room-char-backlight') (light as THREE.SpotLight).intensity = 0.2
-      if (light.name === 'room-floor-lamp') (light as THREE.PointLight).intensity = 0.6
+    if (config[light.name] !== undefined) {
+      ;(light as any).intensity = config[light.name]
+    }
+    // Night mode: blue-tint window light
+    if (light.name === 'room-window-light') {
+      ;(light as THREE.DirectionalLight).color.set(theme === 'night' ? 0x4466aa : 0xffe4b0)
     }
   }
 
@@ -1174,5 +1736,10 @@ export function setRoomTheme(theme: 'cozy' | 'study' | 'night'): void {
       glowMat.color.set(0xffe4b0)
       glowMat.opacity = theme === 'study' ? 0.3 : 0.6
     }
+  }
+
+  // Night bloom boost
+  if (roomBloomPass) {
+    roomBloomPass.strength = theme === 'night' ? 0.5 : 0.3
   }
 }
