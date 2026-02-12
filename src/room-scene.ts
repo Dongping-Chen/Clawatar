@@ -42,8 +42,9 @@ function addEdgeOutline(mesh: THREE.Mesh, color = 0x000000, opacity = 0.08): voi
 function createFloor(): THREE.Mesh {
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(ROOM_W, ROOM_D),
-    mat(0xc49a6c, { roughness: 0.75 })
+    mat(0xc49a6c, { roughness: 0.75, transparent: true, side: THREE.DoubleSide })
   )
+  floor.name = 'wall-floor'
   floor.rotation.x = -Math.PI / 2
   floor.position.set(0, 0, 0)
   floor.receiveShadow = true
@@ -55,8 +56,9 @@ function createCeiling(): THREE.Group {
   // Main ceiling
   const ceiling = new THREE.Mesh(
     new THREE.PlaneGeometry(ROOM_W, ROOM_D),
-    mat(0xf0e8de, { roughness: 0.9 })
+    mat(0xf0e8de, { roughness: 0.9, transparent: true, side: THREE.DoubleSide })
   )
+  ceiling.name = 'wall-ceiling'
   ceiling.rotation.x = Math.PI / 2
   ceiling.position.set(0, ROOM_H, 0)
   group.add(ceiling)
@@ -101,7 +103,7 @@ function createBaseboards(): THREE.Group {
 
 function createWalls(): THREE.Group {
   const walls = new THREE.Group()
-  const wallMat = mat(0xf5ede3, { roughness: 0.9 })
+  const wallMat = mat(0xf5ede3, { roughness: 0.9, transparent: true, side: THREE.DoubleSide })
 
   // Back wall with window hole
   const winW = 1.4, winH = 1.2, winBottom = 1.2
@@ -109,6 +111,7 @@ function createWalls(): THREE.Group {
   const blW = (ROOM_W - winW) / 2
   const bl = box(blW, ROOM_H, 0.1, wallMat)
   bl.position.set(-HALF_W + blW / 2, ROOM_H / 2, -HALF_D)
+  bl.name = 'wall-back'
   bl.castShadow = false; bl.receiveShadow = true
   walls.add(bl)
   const br = box(blW, ROOM_H, 0.1, wallMat)
@@ -165,13 +168,17 @@ function createWalls(): THREE.Group {
   walls.add(sill)
 
   // Left wall
-  const leftWall = box(0.1, ROOM_H, ROOM_D, wallMat)
+  const leftWallMat = mat(0xf5ede3, { roughness: 0.9, transparent: true, side: THREE.DoubleSide })
+  const leftWall = box(0.1, ROOM_H, ROOM_D, leftWallMat)
+  leftWall.name = 'wall-left'
   leftWall.position.set(-HALF_W, ROOM_H / 2, 0)
   leftWall.castShadow = false; leftWall.receiveShadow = true
   walls.add(leftWall)
 
   // Right wall
-  const rightWall = box(0.1, ROOM_H, ROOM_D, wallMat)
+  const rightWallMat = mat(0xf5ede3, { roughness: 0.9, transparent: true, side: THREE.DoubleSide })
+  const rightWall = box(0.1, ROOM_H, ROOM_D, rightWallMat)
+  rightWall.name = 'wall-right'
   rightWall.position.set(HALF_W, ROOM_H / 2, 0)
   rightWall.castShadow = false; rightWall.receiveShadow = true
   walls.add(rightWall)
@@ -1002,13 +1009,16 @@ export function enableRoomMode(): void {
   renderer.toneMappingExposure = 0.95
   scene.fog = new THREE.Fog(0x1a1520, 4, 8)
 
-  // Camera — cozy diorama angle
+  // Camera — cozy diorama angle with free orbit
   camera.position.set(1.8, 2.0, 3.0)
   controls.target.set(0, 0.9, -0.3)
-  controls.minDistance = 2.0
-  controls.maxDistance = 6.0
-  controls.minPolarAngle = 0.3
-  controls.maxPolarAngle = 1.4
+  controls.minDistance = 1.0
+  controls.maxDistance = 4.5
+  controls.minPolarAngle = 0.2
+  controls.maxPolarAngle = 1.5
+  controls.minAzimuthAngle = -Math.PI * 0.75
+  controls.maxAzimuthAngle = Math.PI * 0.75
+  controls.enablePan = true
   controls.update()
 
   setRoomTheme(currentTheme)
@@ -1053,6 +1063,8 @@ export function disableRoomMode(): void {
   controls.maxDistance = 8.0
   controls.minPolarAngle = 0
   controls.maxPolarAngle = Math.PI
+  controls.minAzimuthAngle = -Infinity
+  controls.maxAzimuthAngle = Infinity
 
   camera.position.set(0, 1.2, 3.0)
   controls.target.set(0, 0.9, 0)
@@ -1071,6 +1083,45 @@ export function updateRoom(elapsed: number): void {
   if (cat && cat.children[0]) {
     const breathe = 1.0 + Math.sin(elapsed * 1.5) * 0.03 // Gentle breathing
     cat.children[0].scale.set(1.3, 0.55 * breathe, 1.0)
+  }
+}
+
+/** Clamp camera position to stay inside room bounds */
+export function clampCameraToRoom(): void {
+  if (!_isRoomMode) return
+  const margin = 0.3
+  camera.position.x = Math.max(-HALF_W + margin, Math.min(HALF_W - margin, camera.position.x))
+  camera.position.y = Math.max(0.2, Math.min(ROOM_H - margin, camera.position.y))
+  camera.position.z = Math.max(-HALF_D + margin, Math.min(HALF_D - margin, camera.position.z))
+}
+
+/** Fade out walls when camera approaches them */
+export function updateRoomWallTransparency(): void {
+  if (!_isRoomMode || !roomGroup) return
+  const fadeStart = 0.8  // Start fading at this distance
+  const fadeEnd = 0.2    // Fully transparent at this distance
+
+  const wallChecks: Array<{ name: string; axis: 'x' | 'y' | 'z'; wallPos: number; sign: number }> = [
+    { name: 'wall-back', axis: 'z', wallPos: -HALF_D, sign: -1 },
+    { name: 'wall-left', axis: 'x', wallPos: -HALF_W, sign: -1 },
+    { name: 'wall-right', axis: 'x', wallPos: HALF_W, sign: 1 },
+    { name: 'wall-floor', axis: 'y', wallPos: 0, sign: -1 },
+    { name: 'wall-ceiling', axis: 'y', wallPos: ROOM_H, sign: 1 },
+  ]
+
+  for (const check of wallChecks) {
+    const dist = Math.abs(camera.position[check.axis] - check.wallPos)
+    const opacity = dist <= fadeEnd ? 0 : dist >= fadeStart ? 1 : (dist - fadeEnd) / (fadeStart - fadeEnd)
+
+    roomGroup.traverse((obj) => {
+      if (obj.name === check.name && obj instanceof THREE.Mesh) {
+        const m = obj.material as THREE.MeshStandardMaterial
+        if (m.transparent !== undefined) {
+          m.opacity = opacity
+          m.needsUpdate = true
+        }
+      }
+    })
   }
 }
 

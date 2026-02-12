@@ -13,7 +13,8 @@ import { initTouchReactions } from './touch-reactions'
 import { initEmotionBar } from './emotion-bar'
 import { initBackgrounds, updateBackgroundEffects } from './backgrounds'
 import { initCameraPresets, updateCameraPresets } from './camera-presets'
-import { initRoomScene, enableRoomMode, isRoomMode, getWalkableBounds, updateRoom } from './room-scene'
+import { initRoomScene, enableRoomMode, isRoomMode, getWalkableBounds, updateRoom, clampCameraToRoom, updateRoomWallTransparency } from './room-scene'
+import { updateActivityMode } from './activity-modes'
 import type { AppState } from './types'
 
 export const state: AppState = {
@@ -211,9 +212,12 @@ function animate() {
   }
 
   updateStateMachine(elapsed)
+  updateActivityMode(elapsed)
   updateRoom(elapsed)
   updateBackgroundEffects(elapsed, delta)
   updateCameraPresets(performance.now() / 1000)
+  clampCameraToRoom()
+  updateRoomWallTransparency()
 
   // GLOBAL safety: prevent head from clipping through camera in ANY mode
   // This runs EVERY FRAME as the absolute last guard before render

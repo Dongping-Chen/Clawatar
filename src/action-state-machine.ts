@@ -1,5 +1,6 @@
 import type { CharacterState, IdleConfig } from './types'
 import { state } from './main'
+import { getActivityMode } from './activity-modes'
 import { loadAndPlayAction, playBaseIdle } from './animation'
 import { setExpression, resetExpressions } from './expressions'
 import { triggerSpeak, playAudioLipSync, resetLipSync } from './lip-sync'
@@ -229,6 +230,8 @@ let currentIdleCategory: keyof typeof IDLE_CATEGORIES = 'neutral'
 export function updateStateMachine(elapsed: number) {
   // Follower mode: don't pick idle animations, only respond to WS play_action
   if (isFollower) return
+  // Activity mode handles its own animations
+  if (getActivityMode() !== 'free') return
 
   if (state.characterState !== 'idle') return
   if (elapsed < holdUntil) return

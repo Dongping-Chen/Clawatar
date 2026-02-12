@@ -110,6 +110,9 @@ async function handleCommand(cmd: any) {
       case 'set_room_theme':
         import('./room-scene').then(m => m.setRoomTheme(cmd.theme ?? 'cozy'))
         break
+      case 'set_activity_mode':
+        import('./activity-modes').then(m => m.setActivityMode(cmd.mode ?? 'free'))
+        break
     }
     // Send ack for commands, but NOT for status messages (prevents broadcast loops)
     if (cmd.type !== 'speak_audio' && cmd.type !== 'tts_error' && !cmd.status) {
