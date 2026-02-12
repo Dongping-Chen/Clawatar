@@ -249,6 +249,101 @@ async function handleUserSpeech(text: string, senderWs: WebSocket) {
   }
 }
 
+// --- Multi-device registry ---
+interface DeviceInfo {
+  ws: WebSocket
+  deviceId: string
+  deviceType: string
+  name: string
+}
+const devices = new Map<string, DeviceInfo>()
+
+function getDeviceList(): Array<{deviceId: string, deviceType: string, name: string}> {
+  return Array.from(devices.values()).map(d => ({
+    deviceId: d.deviceId, deviceType: d.deviceType, name: d.name
+  }))
+}
+
+function broadcastDeviceList() {
+  const list = getDeviceList()
+  const msg = JSON.stringify({ type: 'device_list', devices: list })
+  for (const client of clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(msg)
+    }
+  }
+}
+
+// --- Camera frame analysis ---
+let lastFrameTime = 0
+const FRAME_COOLDOWN_MS = 3000 // Min 3s between vision analyses
+
+async function handleCameraFrame(base64Image: string, senderWs: WebSocket) {
+  const now = Date.now()
+  if (now - lastFrameTime < FRAME_COOLDOWN_MS) {
+    return // Rate limit
+  }
+  lastFrameTime = now
+
+  console.log(`Camera frame received (${(base64Image.length / 1024).toFixed(1)}KB), analyzing...`)
+
+  try {
+    // Save frame as temp file for vision analysis
+    const frameBuffer = Buffer.from(base64Image, 'base64')
+    const framePath = join(AUDIO_CACHE_DIR, `frame_${Date.now()}.jpg`)
+    writeFileSync(framePath, frameBuffer)
+
+    // Ask OpenClaw to analyze what it sees (brief description for conversational context)
+    const visionPrompt = `You are Reze (Bomb Devil from Chainsaw Man). You just saw this image from the user's camera. Briefly describe what you see in 1-2 sentences, naturally and casually. Don't say "I see an image of..." — just react naturally like you're looking at someone through a video call.`
+
+    const { execSync } = await import('child_process')
+    const result = execSync(
+      `openclaw agent --message ${JSON.stringify(visionPrompt)} --attachment ${JSON.stringify(framePath)} --json --session-id ${config.openclaw?.sessionId || 'vrm-chat'} 2>/dev/null`,
+      { encoding: 'utf-8', timeout: 30000 }
+    )
+
+    // Parse response
+    const lines = result.split('\n')
+    let jsonStr = ''
+    let braceDepth = 0
+    let inJson = false
+    for (const line of lines) {
+      if (!inJson && line.trim().startsWith('{')) inJson = true
+      if (inJson) {
+        jsonStr += line + '\n'
+        for (const ch of line) {
+          if (ch === '{') braceDepth++
+          if (ch === '}') braceDepth--
+        }
+        if (braceDepth <= 0 && inJson) break
+      }
+    }
+
+    if (jsonStr) {
+      const parsed = JSON.parse(jsonStr)
+      const text = parsed?.result?.payloads?.[0]?.text || 'I can see you~'
+      console.log(`Vision response: "${text.substring(0, 100)}"`)
+
+      // Broadcast vision context as a subtle system note (not full response)
+      const msg = JSON.stringify({
+        type: 'vision_context',
+        text,
+        timestamp: Date.now()
+      })
+      for (const client of clients) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(msg)
+        }
+      }
+    }
+
+    // Clean up frame
+    try { unlinkSync(framePath) } catch {}
+  } catch (e: any) {
+    console.error('Vision analysis error:', e.message)
+  }
+}
+
 // --- WebSocket server ---
 const wss = new WebSocketServer({ port: WS_PORT })
 const clients = new Set<WebSocket>()
@@ -296,6 +391,30 @@ wss.on('connection', (ws) => {
       return
     }
 
+    // Handle camera_frame — vision analysis via OpenClaw
+    if (parsed?.type === 'camera_frame' && parsed.image) {
+      handleCameraFrame(parsed.image, ws).catch(e => {
+        console.error('Camera frame handling error:', e.message)
+      })
+      return
+    }
+
+    // Handle device registration for multi-device sync
+    if (parsed?.type === 'register_device') {
+      const info = {
+        ws,
+        deviceId: parsed.deviceId || randomUUID(),
+        deviceType: parsed.deviceType || 'unknown', // 'ios', 'macos', 'watchos', 'web'
+        name: parsed.name || 'Unknown Device'
+      }
+      devices.set(info.deviceId, info)
+      ws.send(JSON.stringify({ type: 'registered', deviceId: info.deviceId, connectedDevices: getDeviceList() }))
+      // Notify all devices of the updated device list
+      broadcastDeviceList()
+      console.log(`Device registered: ${info.name} (${info.deviceType}) — ${devices.size} devices total`)
+      return
+    }
+
     // Handle user_speech — send to OpenClaw agent, get response, TTS, animate
     if (parsed?.type === 'user_speech' && parsed.text) {
       handleUserSpeech(parsed.text, ws).catch(e => {
@@ -321,6 +440,15 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     clients.delete(ws)
+    // Remove from device registry
+    for (const [id, info] of devices) {
+      if (info.ws === ws) {
+        devices.delete(id)
+        console.log(`Device unregistered: ${info.name} (${info.deviceType})`)
+        broadcastDeviceList()
+        break
+      }
+    }
     console.log(`Client disconnected (${clients.size} total)`)
   })
 })

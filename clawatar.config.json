@@ -4,7 +4,7 @@
     "autoLoad": true
   },
   "voice": {
-    "elevenlabsVoiceId": "your-voice-id-here",
+    "elevenlabsVoiceId": "L5vK1xowu0LZIPxjLSl5",
     "elevenlabsModel": "eleven_turbo_v2_5"
   },
   "server": {

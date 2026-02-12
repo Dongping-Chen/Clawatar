@@ -47,7 +47,33 @@
 - [ ] **Idle breathing** — subtle body sway so avatar never looks frozen
 - [ ] **Better animation filtering** — tag stationary vs root-motion animations
 
-## Phase 5: Platform & Advanced 📋 (Planned — v0.3+)
+## Phase 4.5: iOS + Multimodal 🔥 (In Progress — v0.3)
+### 1. Native iOS App (Capacitor)
+- [ ] Install Capacitor, add iOS platform
+- [ ] Build + sync web bundle to native iOS project
+- [ ] Same experience as desktop — shared WS server for state sync
+- [ ] Touch-optimized mobile layout
+- [ ] Deploy to iPhone via Xcode
+
+### 2. Online VRM Asset Shop
+- [ ] Browse open-source VRM models (VRoid Hub, Booth.pm, etc.)
+- [ ] In-app model browser UI — preview + one-click load
+- [ ] Download and cache models locally
+
+### 3. Streaming ASR + TTS + Multimodal Vision
+- [ ] Real-time speech recognition (streaming ASR)
+- [ ] Streaming TTS — start lip sync before full audio generated
+- [ ] iPhone front camera integration — avatar can "see" the user
+- [ ] Vision API analysis of camera frames (expressions, context)
+- [ ] FaceTime-like experience: you see avatar, avatar sees you
+
+### 4. Animation Refinement
+- [ ] Fix root motion drift on Mixamo animations
+- [ ] Smoother crossfade blending between actions
+- [ ] Idle breathing / subtle body sway
+- [ ] Tag stationary vs root-motion animations in catalog
+
+## Phase 5: Platform & Advanced 📋 (Planned — v0.4+)
 - [ ] **PWA support** — manifest.json, service worker, installable on phone
 - [ ] **OBS overlay mode** — transparent background + compact layout for streaming
 - [ ] **Streaming TTS** — start lip sync before full audio generated

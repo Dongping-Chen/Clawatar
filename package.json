@@ -32,12 +32,15 @@
     "catalog": "node scripts/generate-catalog.mjs"
   },
   "dependencies": {
+    "@capacitor/core": "^8.1.0",
+    "@capacitor/ios": "^8.1.0",
     "@pixiv/three-vrm": "^3.4.5",
     "@pixiv/three-vrm-animation": "^3.4.5",
     "@pixiv/three-vrm-core": "^3.4.5",
     "three": "^0.182.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.1.0",
     "@types/three": "^0.182.0",
     "@types/ws": "^8.5.0",
     "tsx": "^4.19.0",

@@ -1,11 +1,16 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 
 export let scene: THREE.Scene
 export let camera: THREE.PerspectiveCamera
 export let renderer: THREE.WebGLRenderer
 export let controls: OrbitControls
 export let clock: THREE.Clock
+export let composer: EffectComposer | null = null
 export let lightingRig: {
   ambient: THREE.AmbientLight
   skyFill: THREE.HemisphereLight
@@ -96,8 +101,58 @@ export function setTransparentBackground(transparent: boolean) {
   if (transparent) {
     scene.background = null
     renderer.setClearColor(0x000000, 0)
+    // Hide platform circles on transparent bg
+    scene.traverse((obj) => {
+      if (obj instanceof THREE.Mesh && obj.geometry instanceof THREE.CircleGeometry) {
+        obj.visible = false
+      }
+    })
   } else {
     scene.background = new THREE.Color(0xf8e8f0)
     renderer.setClearColor(0xf8e8f0, 1)
   }
+}
+
+export function enableBloom() {
+  composer = new EffectComposer(renderer)
+
+  const renderPass = new RenderPass(scene, camera)
+  composer.addPass(renderPass)
+
+  const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.15,   // strength — very subtle glow
+    0.4,    // radius
+    0.92    // threshold — only bright areas bloom
+  )
+  composer.addPass(bloomPass)
+
+  const outputPass = new OutputPass()
+  composer.addPass(outputPass)
+
+  // Handle resize
+  const origResize = () => {
+    composer?.setSize(window.innerWidth, window.innerHeight)
+  }
+  window.addEventListener('resize', origResize)
+}
+
+export function enhanceLightingForEmbed() {
+  // Boost rim light for more "stage presence"
+  lightingRig.rim.intensity = 0.65
+  lightingRig.rim.color.set(0xffb8e0) // Warmer pink rim
+
+  // Add a subtle back light for hair highlight
+  const backLight = new THREE.SpotLight(0xffd0e8, 0.4, 10, Math.PI / 6, 0.5)
+  backLight.position.set(0, 3, -2)
+  backLight.target.position.set(0, 1.2, 0)
+  scene.add(backLight)
+  scene.add(backLight.target)
+
+  // Keep key light close to original
+  lightingRig.key.intensity = 1.25
+
+  // Slightly warmer bounce
+  lightingRig.bounce.intensity = 0.32
+  lightingRig.bounce.color.set(0xffe0ec)
 }
