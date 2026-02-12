@@ -1531,6 +1531,33 @@ export function isRoomMode(): boolean {
   return _isRoomMode
 }
 
+/** Meeting mode: disable light shaft, dust motes, window glow, and tone down bright lights */
+export function setMeetingLighting(): void {
+  if (animRefs.lightShaft) animRefs.lightShaft.visible = false
+  if (animRefs.dustMotes) animRefs.dustMotes.visible = false
+
+  // Dim window glow
+  const wg = roomGroup?.getObjectByName('window-glow') as THREE.Mesh | undefined
+  if (wg) (wg.material as THREE.MeshBasicMaterial).opacity = 0.01
+
+  // Tone down ALL lights + emissives in the room
+  if (roomGroup) {
+    roomGroup.traverse(obj => {
+      if (obj instanceof THREE.PointLight) obj.intensity *= 0.2
+      if (obj instanceof THREE.SpotLight) obj.intensity *= 0.2
+      // Kill all emissive glow (lamp shades, fairy lights, etc.)
+      if (obj instanceof THREE.Mesh && obj.material) {
+        const m = obj.material as THREE.MeshStandardMaterial
+        if (m.emissiveIntensity) m.emissiveIntensity *= 0.1
+        // Dim bright BasicMaterials (window glow etc.)
+        if (m instanceof THREE.MeshBasicMaterial && m.transparent) {
+          m.opacity = Math.min(m.opacity, 0.05)
+        }
+      }
+    })
+  }
+}
+
 // Track cat ear twitch timing
 let nextEarTwitch = 5
 let earTwitchStart = -1

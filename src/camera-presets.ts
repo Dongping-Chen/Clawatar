@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { camera, controls } from './scene'
 import { state } from './main'
 
-type CameraPreset = 'face' | 'portrait' | 'full' | 'cinematic'
+type CameraPreset = 'face' | 'portrait' | 'full' | 'cinematic' | 'meeting'
 
 type CameraTransition = {
   startTime: number
@@ -43,6 +43,12 @@ const PRESETS: Record<CameraPreset, {
     posOffset: new THREE.Vector3(0.85, -0.1, 2.05),
     targetOffset: new THREE.Vector3(0, -0.17, 0),
     trackHead: false,
+  },
+  meeting: {
+    // Webcam-style: camera at chest level looking up at face
+    posOffset: new THREE.Vector3(-0.08, -0.38, 0.6),  // Left + slightly higher
+    targetOffset: new THREE.Vector3(-0.08, -0.13, 0),  // Look at face, shifted left
+    trackHead: true,
   },
 }
 
@@ -105,8 +111,10 @@ export function updateCameraPresets(nowSeconds: number) {
   if (!headPos) return
 
   // Smooth the head position to avoid jitter (lerp factor)
-  // Face mode needs much faster tracking to prevent clipping
-  const smoothing = currentPreset === 'face' ? 0.25 : 0.10
+  // Face mode = fast tracking; meeting = gentle drift; others = medium
+  const smoothing = currentPreset === 'face' ? 0.25
+    : currentPreset === 'meeting' ? 0.06  // Very smooth for webcam look
+    : 0.10
   if (!trackingInitialized) {
     trackingSmooth.copy(headPos)
     trackingInitialized = true
@@ -127,7 +135,9 @@ export function updateCameraPresets(nowSeconds: number) {
   // Must check against the LIVE head position (not smoothed) for real-time safety
   const liveHeadPos = getHeadWorldPosition()
   if (liveHeadPos) {
-    const minDistance = currentPreset === 'face' ? 1.8 : 2.0
+    const minDistance = currentPreset === 'face' ? 1.8
+      : currentPreset === 'meeting' ? 0.45  // Meeting is very close
+      : 2.0
     const headToCam = camera.position.clone().sub(liveHeadPos)
     const dist = headToCam.length()
     if (dist < minDistance) {
@@ -196,15 +206,22 @@ const customOffsets: Record<string, { distance: number; height: number }> = {}
 function getAdjustedOffsets(presetId: CameraPreset) {
   const preset = PRESETS[presetId]
   const custom = customOffsets[presetId]
-  if (!custom) return { posOffset: preset.posOffset, targetOffset: preset.targetOffset }
+  // Meeting mode also reads horizontal offset from calibration UI
+  const hx = presetId === 'meeting' ? ((window as any).__meetingHorizontal ?? 0) : 0
+  if (!custom) {
+    return {
+      posOffset: new THREE.Vector3(preset.posOffset.x + hx, preset.posOffset.y, preset.posOffset.z),
+      targetOffset: new THREE.Vector3(preset.targetOffset.x + hx, preset.targetOffset.y, preset.targetOffset.z),
+    }
+  }
   return {
     posOffset: new THREE.Vector3(
-      preset.posOffset.x,
+      preset.posOffset.x + hx,
       preset.posOffset.y + custom.height,
       preset.posOffset.z * custom.distance
     ),
     targetOffset: new THREE.Vector3(
-      preset.targetOffset.x,
+      preset.targetOffset.x + hx,
       preset.targetOffset.y + custom.height * 0.5,
       preset.targetOffset.z
     ),

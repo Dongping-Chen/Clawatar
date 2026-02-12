@@ -28,7 +28,9 @@
     "dev": "vite",
     "ws-server": "tsx server/ws-server.ts",
     "start": "node scripts/start.mjs",
-    "meeting": "tsx virtual-meeting/meeting-bridge.ts",
+    "meeting": "tsx virtual-meeting/meeting-bridge-v2.ts",
+    "meeting:v1": "tsx virtual-meeting/meeting-bridge.ts",
+    "meeting:v3": "tsx virtual-meeting/meeting-bridge-v3.ts",
     "build": "vite build",
     "catalog": "node scripts/generate-catalog.mjs"
   },

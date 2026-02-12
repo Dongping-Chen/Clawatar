@@ -48,34 +48,42 @@ function connectWS(): Promise<WebSocket> {
 }
 
 /**
- * Record a chunk of audio from BlackHole using ffmpeg.
- * Returns the path to the recorded WAV file.
+ * Record a chunk of audio from BlackHole using sox/rec (CoreAudio).
+ * ffmpeg avfoundation drops ~72% of audio frames — sox is reliable.
+ * Records at 48kHz stereo, then downsamples to 16kHz mono for Whisper.
  */
 function recordChunk(index: number): Promise<string> {
+  const rawPath = path.join(TMP_DIR, `chunk_raw_${index}.wav`)
   const outPath = path.join(TMP_DIR, `chunk_${index}.wav`)
   
   return new Promise((resolve, reject) => {
-    // Use ffmpeg to capture from BlackHole audio device
-    // On macOS, audio devices are accessed via avfoundation
-    const proc = spawn('ffmpeg', [
-      '-y',
-      '-f', 'avfoundation',
-      '-i', ':BlackHole 2ch',  // audio-only capture from BlackHole
-      '-t', String(CAPTURE_DURATION),
-      '-ar', '16000',          // 16kHz for Whisper
-      '-ac', '1',              // mono
-      '-acodec', 'pcm_s16le',
-      outPath,
+    // Step 1: Record with sox/rec at native 48kHz stereo from BlackHole
+    const proc = spawn('rec', [
+      '-q',                    // quiet mode
+      '-r', '48000',           // native sample rate
+      '-c', '2',               // stereo (BlackHole is stereo)
+      '-b', '16',              // 16-bit
+      rawPath,
+      'trim', '0', String(CAPTURE_DURATION),
     ], { stdio: ['pipe', 'pipe', 'pipe'] })
 
     let stderr = ''
     proc.stderr?.on('data', (d) => { stderr += d.toString() })
     
     proc.on('close', (code) => {
-      if (code === 0 && fs.existsSync(outPath)) {
+      if (code !== 0 || !fs.existsSync(rawPath)) {
+        reject(new Error(`rec failed (code ${code}): ${stderr.slice(-200)}`))
+        return
+      }
+      
+      try {
+        // Step 2: Downsample to 16kHz mono for Whisper
+        execSync(`sox "${rawPath}" -r 16000 -c 1 "${outPath}"`, { timeout: 10000 })
+        // Clean up raw file
+        fs.unlinkSync(rawPath)
         resolve(outPath)
-      } else {
-        reject(new Error(`ffmpeg recording failed (code ${code}): ${stderr.slice(-200)}`))
+      } catch (err) {
+        reject(new Error(`sox downsample failed: ${err}`))
       }
     })
 
@@ -118,7 +126,7 @@ async function transcribe(wavPath: string): Promise<string> {
   const audioBuffer = fs.readFileSync(wavPath)
   formData.append('file', new Blob([audioBuffer], { type: 'audio/wav' }), 'audio.wav')
   formData.append('model', 'whisper-1')
-  formData.append('language', 'en')  // Can be changed or auto-detected
+  formData.append('language', 'zh')  // Force Chinese — meeting is in Chinese
 
   try {
     const resp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -180,8 +188,9 @@ async function captureLoop() {
       // Transcribe
       const text = await transcribe(wavPath)
       
-      // Clean up
-      fs.unlinkSync(wavPath)
+      // Keep audio files for debugging (delete old ones to save space)
+      const oldChunk = path.join(TMP_DIR, `chunk_${chunkIndex - 10}.wav`)
+      if (fs.existsSync(oldChunk)) fs.unlinkSync(oldChunk)
       
       if (text && text.length > 2) {
         sendToAI(text)
@@ -209,26 +218,38 @@ async function main() {
   console.log(`Whisper API: ${WHISPER_API_KEY ? 'configured' : 'NOT SET (set OPENAI_API_KEY)'}`)
   console.log('')
   
-  // Check ffmpeg
+  // Check sox/rec (required — ffmpeg avfoundation drops audio frames)
   try {
-    execSync('which ffmpeg', { stdio: 'pipe' })
+    execSync('which rec', { stdio: 'pipe' })
+    console.log('sox/rec: found')
   } catch {
-    console.error('ERROR: ffmpeg not found. Install with: brew install ffmpeg')
+    console.error('ERROR: sox not found. Install with: brew install sox')
     process.exit(1)
   }
   
   // Check BlackHole
   try {
-    const devices = execSync('ffmpeg -f avfoundation -list_devices true -i "" 2>&1 || true', { encoding: 'utf-8' })
-    if (!devices.includes('BlackHole')) {
+    const devices = execSync('SwitchAudioSource -a 2>/dev/null || true', { encoding: 'utf-8' })
+    if (devices.includes('BlackHole')) {
+      console.log('BlackHole audio device: detected')
+    } else {
       console.warn('WARNING: BlackHole audio device not found.')
       console.warn('Install: brew install --cask blackhole-2ch && reboot')
-      console.warn('Continuing anyway (will fail on first capture)...')
-    } else {
-      console.log('BlackHole audio device: detected')
     }
   } catch {
     console.warn('Could not list audio devices')
+  }
+  
+  // Check sox can record from BlackHole
+  try {
+    const input = execSync('SwitchAudioSource -c -t input 2>/dev/null || true', { encoding: 'utf-8' }).trim()
+    console.log(`Current audio input: ${input}`)
+    if (!input.includes('BlackHole')) {
+      console.warn('WARNING: System audio input is not BlackHole.')
+      console.warn('Set it with: SwitchAudioSource -s "BlackHole 2ch" -t input')
+    }
+  } catch {
+    // ignore
   }
   
   // Connect to WS server

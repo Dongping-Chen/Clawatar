@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { initScene, scene, camera, renderer, controls, clock, composer } from './scene'
-import { initLookAt, updateLookAt } from './look-at'
+import { initLookAt, updateLookAt, setMeetingLookAt } from './look-at'
 import { updateBlink } from './blink'
 import { updateLipSync } from './lip-sync'
 import { applyExpressionOverrides, updateExpressionTransitions } from './expressions'
@@ -9,7 +9,7 @@ import { initUI } from './ui'
 import { loadVRM } from './vrm-loader'
 import { playBaseIdle } from './animation'
 import { updateBreathing } from './breathing'
-import { updateStateMachine } from './action-state-machine'
+import { updateStateMachine, setMeetingMode } from './action-state-machine'
 import { initTouchReactions } from './touch-reactions'
 import { initReactiveIdle, updateReactiveIdle } from './reactive-idle'
 import { initEmotionBar } from './emotion-bar'
@@ -88,8 +88,10 @@ async function autoLoad() {
   showDropPrompt()
 }
 
-// Check if running in embed mode (iOS app / iframe)
-const isEmbed = new URLSearchParams(window.location.search).has('embed')
+// Check if running in embed mode (iOS app / iframe) or meeting mode (OBS virtual camera)
+const params = new URLSearchParams(window.location.search)
+const isEmbed = params.has('embed')
+const isMeeting = params.has('meeting')
 
 function init() {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement
@@ -109,24 +111,76 @@ function init() {
       m.controls.enableRotate = false
       m.controls.enablePan = false
       m.controls.enableZoom = false
+    } else if (isMeeting) {
+      // Meeting mode: hide UI, keep room, head-tracking camera, lock eyes to camera
+      m.enhanceLightingForWeb()
+      hideAllUI()
+      // Narrow FOV for webcam-like framing
+      m.camera.fov = 28
+      m.camera.updateProjectionMatrix()
+      m.controls.update()
+      m.controls.enableRotate = false
+      m.controls.enablePan = false
+      m.controls.enableZoom = false
+      // Use meeting camera preset with head bone tracking + calibration UI
+      import('./camera-presets').then(cp => cp.setCameraPreset('meeting', 0.5))
+      import('./meeting-calibration').then(mc => mc.initMeetingCalibration())
+      // Meeting behavior: no random idle, eyes locked to camera
+      setMeetingMode(true)
+      setMeetingLookAt(true)
+      // Meeting lighting: night theme + kill all bloom/glow
+      import('./room-scene').then(rm => {
+        rm.enableRoomMode()
+        rm.setRoomTheme('night')
+        // After room fully builds, kill all bright elements
+        setTimeout(() => {
+          rm.setMeetingLighting()
+          // Kill bloom AFTER room bloom is set up
+          import('./scene').then(sc => {
+            if (sc.roomBloomPass) sc.roomBloomPass.strength = 0.0
+            sc.renderer.toneMappingExposure = 0.85
+          })
+        }, 1000)
+      })
+      // Add meeting-specific face lighting
+      import('./scene').then(sc => {
+        import('three').then(THREE => {
+          // Soft frontal key light for face (like a ring light)
+          const faceFill = new THREE.PointLight(0xfff5f0, 1.2, 5)
+          faceFill.position.set(0, 1.5, 1.5)  // In front of face
+          sc.scene.add(faceFill)
+          // Gentle side fill to reduce shadows
+          const sideFill = new THREE.PointLight(0xffe8e0, 0.5, 4)
+          sideFill.position.set(-0.8, 1.5, 1.0)
+          sc.scene.add(sideFill)
+        })
+      })
     } else {
       // Web mode: same light setup but reduced intensity (solid bg adds brightness)
       m.enhanceLightingForWeb()
     }
   })
 
-  if (!isEmbed) {
+  if (!isEmbed && !isMeeting) {
     initUI()
   }
 
-  initTouchReactions(canvas)
-  initReactiveIdle(canvas)
-  initEmotionBar()
+  // Meeting mode: set flags EARLY (before animate loop) to prevent any random idles
+  if (isMeeting) {
+    setMeetingMode(true)
+    setMeetingLookAt(true)
+  }
+
+  if (!isMeeting) {
+    initTouchReactions(canvas)
+    initReactiveIdle(canvas)
+    initEmotionBar()
+  }
   initBackgrounds()
   initCameraPresets()
   initRoomScene()
   if (!isEmbed) {
-    // Enable room mode by default for web
+    // Enable room mode by default for web and meeting
     enableRoomMode()
   }
   initChatAndVoice()

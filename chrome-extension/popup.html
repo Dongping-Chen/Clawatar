@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { width: 240px; padding: 12px; font-family: -apple-system, sans-serif; background: #1a1520; color: #fff; }
+  h3 { margin: 0 0 8px; font-size: 14px; color: #ff6b9d; }
+  .status { font-size: 12px; color: #999; margin: 8px 0; }
+  .status.active { color: #4ade80; }
+  button { width: 100%; padding: 8px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; margin: 4px 0; }
+  #startBtn { background: #ff6b9d; color: white; }
+  #startBtn:hover { background: #ff4081; }
+  #stopBtn { background: #333; color: #ccc; display: none; }
+  #stopBtn:hover { background: #444; }
+</style>
+</head>
+<body>
+  <h3>Clawatar Audio</h3>
+  <div id="status" class="status">Ready — open a meeting tab first</div>
+  <button id="startBtn">Start Capture</button>
+  <button id="stopBtn">Stop</button>
+  <script src="popup.js"></script>
+</body>
+</html>

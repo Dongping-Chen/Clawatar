@@ -48,6 +48,19 @@ Open `http://localhost:3000` and drop your `.vrm` model onto the page.
 - **Voice output** — ElevenLabs TTS (optional, requires API key)
 - **AI conversation** — powered by [OpenClaw](https://github.com/openclaw/openclaw) (optional)
 
+### 🏠 3D Room Environment
+- **Procedural room** — desk, bed, bookshelf, fairy lights, 30+ objects
+- **3 themes** — Cozy (warm afternoon), Study (desk lamp), Night (fairy lights + bloom)
+- **Camera freedom** — orbit ±135° inside the room, walls fade on approach
+- **Activity modes** — Study, Exercise, Chill with themed camera angles + animations
+
+### 📹 Virtual Meeting Avatar
+- **Join Google Meet / Zoom** — avatar appears via OBS Virtual Camera
+- **Listen & respond** — captures meeting audio via BlackHole → Whisper STT → AI → TTS
+- **Smart triggers** — responds when called by name or asked a question
+- **Streaming pipeline (v3)** — VAD + streaming GPT-4o + streaming ElevenLabs TTS, ~2.6s latency
+- **Rolling context** — maintains 2-minute transcript window for coherent responses
+
 ### 🔌 Developer-Friendly
 - **WebSocket API** — control everything programmatically
 - **Drag & drop** — load any VRM model
@@ -116,6 +129,20 @@ Clawatar includes an [OpenClaw](https://github.com/openclaw/openclaw) skill at `
 | `npm run ws-server` | WebSocket server only |
 | `npm run build` | Production build |
 | `npm run catalog` | Regenerate animation catalog |
+| `npm run meeting` | Virtual meeting bridge v2 (continuous listen + smart trigger) |
+| `npm run meeting:v3` | Virtual meeting bridge v3 (streaming VAD + streaming TTS) |
+
+## Virtual Meeting Setup
+
+1. Install [OBS Studio](https://obsproject.com/) and [BlackHole 2ch](https://existential.audio/blackhole/)
+2. Create a Multi-Output Device (Audio MIDI Setup) → your speakers + BlackHole 2ch
+3. Set system output to the Multi-Output Device
+4. OBS: Add Browser Source → `http://localhost:3000?embed` → Start Virtual Camera
+5. Start the avatar: `npm run start`
+6. Start the meeting bridge: `npm run meeting:v3`
+7. In Google Meet: select OBS Virtual Camera (video) and BlackHole 2ch (mic)
+
+See `virtual-meeting/README.md` for detailed architecture docs.
 
 ## Credits
 

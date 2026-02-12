@@ -443,8 +443,53 @@ wss.on('connection', (ws) => {
   console.log(`Client connected (${clients.size} total)`)
 
   ws.on('message', async (data) => {
+    // Handle binary audio data from Chrome extension
+    if (data instanceof Buffer && (ws as any).__pendingAudioChunk) {
+      const meta = (ws as any).__pendingAudioChunk
+      delete (ws as any).__pendingAudioChunk
+      console.log(`[chrome-audio] Received ${data.length} bytes`)
+      // Save to temp file, convert with ffmpeg, transcribe with Whisper
+      try {
+        const tmpWebm = join(AUDIO_CACHE_DIR, `chunk_${Date.now()}.webm`)
+        const tmpWav = tmpWebm.replace('.webm', '.wav')
+        writeFileSync(tmpWebm, data)
+        // Convert webm to wav for Whisper
+        const { execSync } = await import('child_process')
+        execSync(`ffmpeg -y -i "${tmpWebm}" -ar 16000 -ac 1 -acodec pcm_s16le "${tmpWav}" 2>/dev/null`, { timeout: 10000 })
+        // Transcribe via Whisper API
+        const apiKey = process.env.OPENAI_API_KEY ||
+          (() => { try { return JSON.parse(readFileSync(resolve(import.meta.dirname ?? '.', '..', '..', '..', '.openclaw/openclaw.json'), 'utf-8')).skills?.entries?.['openai-whisper-api']?.apiKey } catch { return '' } })()
+        if (apiKey) {
+          const formData = new FormData()
+          formData.append('file', new Blob([readFileSync(tmpWav)], { type: 'audio/wav' }), 'audio.wav')
+          formData.append('model', 'whisper-1')
+          const resp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${apiKey}` },
+            body: formData,
+          })
+          if (resp.ok) {
+            const result = await resp.json() as { text: string }
+            const text = (result.text || '').trim()
+            if (text && text.length > 1) {
+              console.log(`[chrome-audio] Transcribed: "${text}"`)
+              const meetingPrompt = `[Meeting Audio] Someone said: "${text}"\n\nRespond naturally if relevant.`
+              handleUserSpeech(meetingPrompt, ws).catch(e => console.error('Meeting speech error:', e.message))
+            }
+          }
+        }
+        // Cleanup
+        try { unlinkSync(tmpWebm) } catch {}
+        try { unlinkSync(tmpWav) } catch {}
+      } catch (e: any) {
+        console.error('[chrome-audio] Processing error:', e.message)
+      }
+      return
+    }
+
     const msg = data.toString()
-    console.log('Received:', msg)
+    // Skip logging binary-looking messages
+    if (msg.length < 500) console.log('Received:', msg)
 
     let parsed: any
     try { parsed = JSON.parse(msg) } catch { parsed = null }
@@ -502,6 +547,44 @@ wss.on('connection', (ws) => {
       // Notify all devices of the updated device list
       broadcastDeviceList()
       console.log(`Device registered: ${info.name} (${info.deviceType}) — ${devices.size} devices total`)
+      return
+    }
+
+    // Handle audio_chunk from Chrome extension — binary audio follows this JSON message
+    if (parsed?.type === 'audio_chunk' && parsed.size > 0) {
+      // Next binary message will contain the audio data
+      (ws as any).__pendingAudioChunk = parsed
+      return
+    }
+
+    // Handle meeting_response — bridge already has AI response, just do TTS + broadcast
+    if (parsed?.type === 'meeting_response' && parsed.text) {
+      console.log(`[meeting] Speaking: "${parsed.text}"`)
+      const { action_id, expression, expression_weight } = pickAction(parsed.text)
+      try {
+        const audioUrl = await generateTTS(parsed.text)
+        const msg = JSON.stringify({
+          type: 'speak_audio',
+          audio_url: audioUrl,
+          text: parsed.text,
+          action_id,
+          expression,
+          expression_weight,
+        })
+        for (const client of clients) {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(msg)
+          }
+        }
+        console.log(`[meeting] TTS sent: ${action_id}, ${expression}`)
+      } catch (e: any) {
+        console.error('[meeting] TTS error:', e.message)
+        // Fallback: send text without audio
+        const fallback = JSON.stringify({ type: 'speak', text: parsed.text, action_id, expression, expression_weight })
+        for (const client of clients) {
+          if (client.readyState === WebSocket.OPEN) client.send(fallback)
+        }
+      }
       return
     }
 

@@ -14,7 +14,7 @@
                                                        ▼
 ┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
 │  AI Response     │◀───│  Whisper STT │◀────│  BlackHole-2ch  │
-│  (OpenClaw)      │     │  (transcribe)│     │  (virtual audio)│
+│  (GPT-4o stream) │     │  (transcribe)│     │  (virtual audio)│
 │  + TTS + anim    │     └──────────────┘     └─────────────────┘
 └────────┬────────┘
          │ speak_audio + animation
@@ -25,85 +25,116 @@
 └─────────────────┘
 ```
 
-## Components
+## Pipeline Versions
 
-### 1. Video: OBS Virtual Camera
-- OBS captures the browser window (localhost:3000) showing the VRM avatar
-- "Start Virtual Camera" makes it available as a camera source in any meeting app
-- Meeting participants see the VRM avatar instead of your real face
+### v1 (`meeting-bridge.ts`) — Basic
+- Fixed-length sox recording → Whisper → OpenClaw CLI → TTS
+- Simple but high latency (~12-15s)
 
-### 2. Audio Input: BlackHole-2ch (Virtual Audio Device)
-- Routes meeting audio to our system for transcription
-- macOS Audio MIDI Setup: Create "Multi-Output Device" → Built-in Output + BlackHole-2ch
-- Set system output to Multi-Output → you hear audio AND it goes to BlackHole
+### v2 (`meeting-bridge-v2.ts`) — Smart Triggers
+- Continuous 3s chunks via sox
+- Rolling 2-minute transcript for context
+- Smart trigger detection (20+ name variants, question patterns)
+- `meeting_response` WS type (pre-generated AI text → TTS, no double AI call)
+- 8s response cooldown
+- **Latency: ~8-14s total**
 
-### 3. Speech-to-Text: Whisper API
-- Continuously captures audio from BlackHole
-- Transcribes speech segments → sends to AI
+### v3 (`meeting-bridge-v3.ts`) — Streaming ⚡
+- **VAD recording**: sox `silence` effect auto-detects speech start/end
+- **Streaming GPT-4o**: Direct OpenAI API, `stream: true`, first token ~0.5s
+- **Sentence splitter**: Yields complete sentences as they arrive
+- **Streaming ElevenLabs TTS**: WebSocket API, starts TTS before AI finishes
+- **Pipelined**: AI generates → sentences split → TTS streams → audio broadcasts
+- **Latency: ~2.6s post-speech** (VAD 3.3s + STT 1.1s + AI 0.46s + TTS 1.45s)
 
-### 4. AI + TTS: OpenClaw Pipeline
-- Receives transcribed meeting audio
-- Decides when/if to respond (listening mode by default)
-- Generates response → ElevenLabs TTS → plays through VRM lip sync
-- VRM animation + expression matches response emotion
+## Trigger Detection
 
-### 5. Audio Output: BlackHole as Virtual Mic
-- Meeting app uses BlackHole as microphone input
-- TTS audio routes to BlackHole → meeting participants hear the avatar speak
+The bridge responds when:
+1. **Name called** — "Reze", "雷泽", "蕾泽", "东平" (+ 20 Whisper misheard variants like "Riz", "Ruiz", "Razor", etc.)
+2. **Question directed** — Contains question markers (吗/呢/嘛/what/how) AND contains "你" or a trigger name
+3. **Cooldown** — 8s between responses to avoid rapid-fire
+
+Whisper `prompt` parameter: `"Reze, Dongping, 东平, 雷泽"` improves proper noun recognition.
+
+## Audio Pipeline
+
+**IMPORTANT**: ffmpeg avfoundation drops ~72% of audio frames from BlackHole. We use `sox/rec` (CoreAudio) instead — perfect 1:1 recording with zero data loss.
+
+```
+Meeting audio → System Output → Multi-Output Device → BlackHole 2ch
+                                                     ↓
+sox/rec (CoreAudio) → 16kHz mono WAV → Whisper API → transcript
+                                                     ↓
+Trigger check → GPT-4o (streaming) → sentences → ElevenLabs TTS (streaming)
+                                                     ↓
+WS broadcast → VRM lip sync + animation + expression
+```
 
 ## Quick Start
 
 ### Prerequisites
 ```bash
-# OBS (already installed)
+# OBS Studio
 brew install --cask obs
 
-# BlackHole (needs sudo — run manually)
+# BlackHole virtual audio (needs sudo — run manually, then REBOOT)
 brew install --cask blackhole-2ch
-# Then REBOOT your Mac
 
-# Verify BlackHole is installed
+# sox for audio recording
+brew install sox
+
+# Verify
 ls /Library/Audio/Plug-Ins/HAL/ | grep BlackHole
+which rec  # should show /opt/homebrew/bin/rec
 ```
 
-### Setup Steps
-
-#### 1. Audio Routing (one-time setup)
+### Audio Routing (one-time setup)
 1. Open **Audio MIDI Setup** (Spotlight → "Audio MIDI Setup")
 2. Click **+** → **Create Multi-Output Device**
-   - Check: Built-in Output (your speakers/headphones)
-   - Check: BlackHole 2ch
-3. Click **+** → **Create Aggregate Device**
-   - Check: BlackHole 2ch (this is your virtual mic input)
-4. Set **System Output** → Multi-Output Device (so you hear + BlackHole gets audio)
+   - ✅ Built-in Output (your speakers/headphones)
+   - ✅ BlackHole 2ch
+3. Set **System Output** → Multi-Output Device
 
-#### 2. OBS Setup
+### OBS Setup
 1. Open OBS Studio
-2. Add Source → **Window Capture** → select browser showing localhost:3000
-3. Crop to just the VRM avatar (remove browser chrome)
-4. Click **Start Virtual Camera**
+2. Add Source → **Browser** → URL: `http://localhost:3000?embed`
+   - Width: 1920, Height: 1080
+3. Click **Start Virtual Camera**
 
-#### 3. Meeting Setup
-1. Open Google Meet / 腾讯会议 / Zoom
-2. Settings → Camera → **OBS Virtual Camera**
-3. Settings → Microphone → **BlackHole 2ch** (or Aggregate Device)
-4. Settings → Speaker → **Multi-Output Device** (so you still hear)
+### Meeting Setup
+1. Open Google Meet / Zoom
+2. Camera → **OBS Virtual Camera**
+3. Microphone → **BlackHole 2ch**
+4. Speaker → **Multi-Output Device** (so you still hear)
 
-#### 4. Start the Pipeline
+### Run
 ```bash
-cd /path/to/vrm-viewer
-npm run start           # Start VRM viewer + WS server
-npm run meeting         # Start meeting audio capture + transcription loop
+npm run start           # VRM viewer + WS server + audio server
+npm run meeting:v3      # Streaming meeting bridge (recommended)
+# or
+npm run meeting         # v2 meeting bridge (simpler, higher latency)
 ```
 
-## Demo Mode (Simplified)
-For the Friday demo, we can simplify:
-- Manual trigger: You type what to say, AI responds via avatar
-- Skip auto-detection of "when addressed"
-- Just show: avatar visible in meeting → avatar speaks with lip sync
-- Command: `/meeting say Hello everyone!` in the web chat
+## Environment Variables
+
+```bash
+OPENAI_API_KEY=sk-...        # Required for Whisper STT + GPT-4o
+ELEVENLABS_API_KEY=sk_...    # Required for TTS
+```
+
+These are read from `~/.openclaw/openclaw.json` skill configs automatically.
 
 ## Files
-- `virtual-meeting/capture.ts` — Audio capture from BlackHole via Web Audio API
-- `virtual-meeting/meeting-bridge.ts` — Bridge between meeting audio and OpenClaw
-- `virtual-meeting/README.md` — This file
+| File | Description |
+|------|-------------|
+| `meeting-bridge.ts` | v1 — basic sox + Whisper loop |
+| `meeting-bridge-v2.ts` | v2 — continuous listen + smart triggers + rolling transcript |
+| `meeting-bridge-v3.ts` | v3 — streaming VAD + GPT-4o + ElevenLabs WebSocket |
+| `test-pipeline.ts` | End-to-end latency benchmark tool |
+| `README.md` | This file |
+
+## Known Issues
+- Whisper transcribes "Reze" inconsistently — mitigated with prompt param + expanded trigger list
+- `eleven_turbo_v2_5` TTS model may not support Chinese — verify and fall back to `eleven_multilingual_v2`
+- TTS audio currently plays through VRM viewer only — routing back to BlackHole as virtual mic for meeting participants is TODO
+- OBS scene needs manual configuration (browser source → virtual camera)

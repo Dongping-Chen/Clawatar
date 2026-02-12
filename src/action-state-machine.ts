@@ -15,6 +15,10 @@ export const idleConfig: IdleConfig = {
 // noidle mode: follower instances skip idle animation picks, only respond to WS commands
 const isFollower = new URLSearchParams(window.location.search).has('noidle')
 
+// Meeting mode: no random idle animations, only respond to speak commands
+let meetingMode = false
+export function setMeetingMode(enabled: boolean) { meetingMode = enabled }
+
 // DM Motionpack animations organized by emotion (from vrma_catalog.json)
 // These are high-quality Booth companion animations
 const IDLE_CATEGORIES = {
@@ -230,6 +234,8 @@ let currentIdleCategory: keyof typeof IDLE_CATEGORIES = 'neutral'
 export function updateStateMachine(elapsed: number) {
   // Follower mode: don't pick idle animations, only respond to WS play_action
   if (isFollower) return
+  // Meeting mode: no random idle animations
+  if (meetingMode) return
   // Activity mode handles its own animations
   if (getActivityMode() !== 'free') return
 
@@ -285,6 +291,8 @@ function broadcastIdleAction(actionId: string, expression?: { name: string; weig
 }
 
 export async function requestAction(actionId: string) {
+  // Meeting mode: only allow speaking gestures, block random actions
+  if (meetingMode && state.characterState !== 'speaking') return
   setState('action')
   await loadAndPlayAction(actionId, false, () => {
     resetExpressions()  // Clear expression overrides when action ends

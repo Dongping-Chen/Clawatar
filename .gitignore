@@ -5,3 +5,4 @@ server/_audio_cache/
 .DS_Store
 *.vrm
 dist/
+public/audio/
