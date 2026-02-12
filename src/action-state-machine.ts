@@ -164,7 +164,7 @@ function getTimeAdjustedWeights(): Array<[keyof typeof IDLE_CATEGORIES, number]>
   }
 }
 
-function pickIdleAction(): string {
+function pickIdleActionWithCategory(): { action: string; category: keyof typeof IDLE_CATEGORIES } {
   // Time-aware weighted random category pick
   const weights = getTimeAdjustedWeights()
   const roll = Math.random()
@@ -178,7 +178,8 @@ function pickIdleAction(): string {
     }
   }
   const actions = IDLE_CATEGORIES[category]
-  return actions[Math.floor(Math.random() * actions.length)]
+  const action = actions[Math.floor(Math.random() * actions.length)]
+  return { action, category }
 }
 
 let lastIdleAttempt = 0
@@ -194,6 +195,23 @@ function setState(s: CharacterState) {
   stateChangeListeners.forEach(fn => fn(s))
 }
 
+// Map animation categories to subtle expression settings
+function getExpressionForCategory(category: keyof typeof IDLE_CATEGORIES): { name: string; weight: number } | null {
+  switch (category) {
+    case 'happy':    return { name: 'happy', weight: 0.3 }    // Subtle smile, not full squint
+    case 'loving':   return { name: 'happy', weight: 0.35 }
+    case 'excited':  return { name: 'happy', weight: 0.25 }
+    case 'shy':      return { name: 'happy', weight: 0.15 }   // Tiny shy smile
+    case 'tired':    return { name: 'relaxed', weight: 0.4 }  // Sleepy eyes
+    case 'proud':    return { name: 'happy', weight: 0.2 }
+    case 'neutral':  return null  // No expression override — natural
+    case 'stretching': return null
+    default: return null
+  }
+}
+
+let currentIdleCategory: keyof typeof IDLE_CATEGORIES = 'neutral'
+
 export function updateStateMachine(elapsed: number) {
   if (state.characterState !== 'idle') return
   if (elapsed < holdUntil) return
@@ -203,16 +221,28 @@ export function updateStateMachine(elapsed: number) {
 
   if (Math.random() > idleConfig.idleActionChance) return
 
-  const actionId = pickIdleAction()
+  const { action: actionId, category } = pickIdleActionWithCategory()
+  currentIdleCategory = category
   setState('action')
 
+  // Set subtle expression matching the animation's emotion
+  const expr = getExpressionForCategory(category)
+  if (expr) {
+    setExpression(expr.name, expr.weight)
+  }
+
   loadAndPlayAction(actionId, false, () => {
+    // ALWAYS reset expressions when idle animation finishes
+    resetExpressions()
     playBaseIdle().then(() => {
       setState('idle')
       holdUntil = elapsed + idleConfig.idleMinHoldSeconds +
         Math.random() * (idleConfig.idleMaxHoldSeconds - idleConfig.idleMinHoldSeconds)
     })
-  }).catch(() => setState('idle'))
+  }).catch(() => {
+    resetExpressions()
+    setState('idle')
+  })
 }
 
 export async function requestAction(actionId: string) {
