@@ -25,7 +25,7 @@ export function initScene(canvas: HTMLCanvasElement) {
 
   scene.background = new THREE.Color(0xf8e8f0)
 
-  camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.01, 100)
+  camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.05, 100)
   camera.position.set(0, 1.2, 3.0)
 
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
@@ -88,6 +88,8 @@ export function initScene(canvas: HTMLCanvasElement) {
   controls.target.set(0, 0.9, 0)
   controls.enableDamping = true
   controls.dampingFactor = 0.1
+  controls.minDistance = 1.5   // Prevent user from zooming inside the model
+  controls.maxDistance = 8.0   // Don't let camera go too far either
   controls.update()
 
   window.addEventListener('resize', () => {

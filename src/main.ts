@@ -13,6 +13,7 @@ import { initTouchReactions } from './touch-reactions'
 import { initEmotionBar } from './emotion-bar'
 import { initBackgrounds, updateBackgroundEffects } from './backgrounds'
 import { initCameraPresets, updateCameraPresets } from './camera-presets'
+import { initRoomScene, enableRoomMode } from './room-scene'
 import type { AppState } from './types'
 
 export const state: AppState = {
@@ -114,6 +115,11 @@ function init() {
   initEmotionBar()
   initBackgrounds()
   initCameraPresets()
+  initRoomScene()
+  if (!isEmbed) {
+    // Enable room mode by default for web
+    enableRoomMode()
+  }
   initChatAndVoice()
   connectWS()
   autoLoad()
@@ -177,6 +183,7 @@ function animate() {
   updateCameraPresets(performance.now() / 1000)
 
   // GLOBAL safety: prevent head from clipping through camera in ANY mode
+  // This runs EVERY FRAME as the absolute last guard before render
   if (state.vrm) {
     const headBone = state.vrm.humanoid?.getNormalizedBoneNode('head')
     if (headBone) {
@@ -184,9 +191,10 @@ function animate() {
       headBone.getWorldPosition(headPos)
       const camToHead = headPos.clone().sub(camera.position)
       const dist = camToHead.length()
-      const minSafeDist = 0.8  // Never let head get closer than 0.8 units to camera
+      // 1.5 units = safe for all VRM models (head mesh extends ~0.2 units from bone)
+      const minSafeDist = 1.5
       if (dist < minSafeDist) {
-        // Push camera backwards along the camera-to-head vector
+        // HARD push camera out — instant, no lerp, no negotiation
         const pushDir = camToHead.normalize().multiplyScalar(-(minSafeDist - dist))
         camera.position.add(pushDir)
       }

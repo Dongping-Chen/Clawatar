@@ -24,12 +24,12 @@ const PRESETS: Record<CameraPreset, {
   trackHead: boolean
 }> = {
   face: {
-    posOffset: new THREE.Vector3(0, -0.02, 1.8),    // Face — pulled way back to prevent clipping
+    posOffset: new THREE.Vector3(0, -0.02, 2.2),    // Face — far enough to never clip even during animations
     targetOffset: new THREE.Vector3(0, -0.03, 0),   // Look at face center
     trackHead: true,
   },
   portrait: {
-    posOffset: new THREE.Vector3(0, -0.1, 2.0),     // Upper body — pulled back from 1.3
+    posOffset: new THREE.Vector3(0, -0.1, 2.5),     // Upper body — safe distance
     targetOffset: new THREE.Vector3(0, -0.25, 0),   // Target at upper chest
     trackHead: true,
   },
@@ -119,19 +119,23 @@ export function updateCameraPresets(nowSeconds: number) {
   const targetPos = trackingSmooth.clone().add(adjusted.targetOffset)
   const camPos = trackingSmooth.clone().add(adjusted.posOffset)
 
-  // SAFETY: enforce minimum distance between camera and head to prevent clipping
-  const minDistance = currentPreset === 'face' ? 1.4 : 1.5
-  const headToCam = camPos.clone().sub(headPos)
-  const dist = headToCam.length()
-  if (dist < minDistance) {
-    // Push camera out to minimum distance along the same direction
-    headToCam.normalize().multiplyScalar(minDistance)
-    camPos.copy(headPos).add(headToCam)
-  }
-
-  // Apply smoothly
+  // Apply smooth tracking
   camera.position.lerp(camPos, smoothing)
   controls.target.lerp(targetPos, smoothing)
+
+  // SAFETY: enforce minimum distance AFTER lerp — this is the final guard
+  // Must check against the LIVE head position (not smoothed) for real-time safety
+  const liveHeadPos = getHeadWorldPosition()
+  if (liveHeadPos) {
+    const minDistance = currentPreset === 'face' ? 1.8 : 2.0
+    const headToCam = camera.position.clone().sub(liveHeadPos)
+    const dist = headToCam.length()
+    if (dist < minDistance) {
+      // HARD push camera out — no lerp, instant correction
+      headToCam.normalize().multiplyScalar(minDistance)
+      camera.position.copy(liveHeadPos).add(headToCam)
+    }
+  }
 }
 
 /** Set camera to a named preset (callable from WS commands) */
