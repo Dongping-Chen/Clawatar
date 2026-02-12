@@ -78,12 +78,64 @@ const CATEGORY_WEIGHTS: Array<[keyof typeof IDLE_CATEGORIES, number]> = [
   ['cozy', 0.05],      // Booth EmoteCollector sitting/sleeping
 ]
 
+// Time-of-day weight adjustments
+function getTimeAdjustedWeights(): Array<[keyof typeof IDLE_CATEGORIES, number]> {
+  const hour = new Date().getHours()
+
+  if (hour >= 23 || hour < 6) {
+    // Late night / early morning — sleepy, cozy, calm
+    return [
+      ['cozy', 0.35],       // More sleeping/sitting
+      ['relaxed', 0.25],
+      ['cute', 0.20],
+      ['selfCare', 0.10],   // Yawning, stretching
+      ['emote', 0.05],
+      ['active', 0.03],
+      ['happy', 0.02],
+    ]
+  } else if (hour >= 6 && hour < 10) {
+    // Morning — waking up, stretching, getting energized
+    return [
+      ['selfCare', 0.30],   // Stretching, yawning
+      ['relaxed', 0.25],
+      ['cute', 0.20],
+      ['active', 0.12],
+      ['happy', 0.08],
+      ['emote', 0.03],
+      ['cozy', 0.02],
+    ]
+  } else if (hour >= 10 && hour < 18) {
+    // Daytime — active, cheerful, engaged
+    return [
+      ['cute', 0.28],
+      ['active', 0.22],
+      ['happy', 0.18],
+      ['relaxed', 0.14],
+      ['emote', 0.10],
+      ['selfCare', 0.05],
+      ['cozy', 0.03],
+    ]
+  } else {
+    // Evening (18-23) — winding down, relaxed, comfortable
+    return [
+      ['cute', 0.25],
+      ['relaxed', 0.25],
+      ['emote', 0.15],
+      ['happy', 0.12],
+      ['selfCare', 0.10],
+      ['cozy', 0.08],
+      ['active', 0.05],
+    ]
+  }
+}
+
 function pickIdleAction(): string {
-  // Weighted random category pick
+  // Time-aware weighted random category pick
+  const weights = getTimeAdjustedWeights()
   const roll = Math.random()
   let cumulative = 0
   let category: keyof typeof IDLE_CATEGORIES = 'relaxed'
-  for (const [cat, weight] of CATEGORY_WEIGHTS) {
+  for (const [cat, weight] of weights) {
     cumulative += weight
     if (roll <= cumulative) {
       category = cat
