@@ -87,6 +87,9 @@ async function handleCommand(cmd: any) {
       case 'lookAt':
         setLookAtTarget(cmd.x ?? 0, cmd.y ?? 1.5, cmd.z ?? -1)
         break
+      case 'set_camera_preset':
+        import('./camera-presets').then(m => m.setCameraPreset(cmd.preset, cmd.duration))
+        break
     }
     // Send ack for commands, but NOT for status messages (prevents broadcast loops)
     if (cmd.type !== 'speak_audio' && cmd.type !== 'tts_error' && !cmd.status) {

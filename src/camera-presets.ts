@@ -62,6 +62,14 @@ export function updateCameraPresets(nowSeconds: number) {
   }
 }
 
+/** Set camera to a named preset (callable from WS commands) */
+export function setCameraPreset(presetId: string, duration = 0.8) {
+  const preset = PRESETS[presetId as CameraPreset]
+  if (!preset) return false
+  startTransition(preset, duration)
+  return true
+}
+
 function startTransition(target: { position: THREE.Vector3; target: THREE.Vector3 }, duration: number) {
   transition = {
     startTime: performance.now() / 1000,
