@@ -4,6 +4,8 @@ import { loadAndPlay } from './animation'
 import { setExpression, resetExpressions } from './expressions'
 import { triggerSpeak } from './lip-sync'
 import { setLookAtTarget } from './look-at'
+import { detectEmotion } from './emotion-detect'
+import { notifyUserActivity } from './reactive-idle'
 import { requestAction, requestSpeak, requestSpeakAudio, requestReset, getState } from './action-state-machine'
 import { addMessage } from './chat-ui'
 import { initVoiceInput, toggleListening, setMicButton } from './voice-input'
@@ -59,15 +61,26 @@ async function handleCommand(cmd: any) {
         // Fallback if server didn't handle TTS (no API key, etc.)
         await requestSpeak(cmd.text ?? '', cmd.action_id, cmd.expression, cmd.expression_weight)
         break
-      case 'speak_audio':
+      case 'speak_audio': {
         // Audio-driven speech from TTS server
         if (cmd.text) addMessage('avatar', cmd.text)
-        await requestSpeakAudio(
-          cmd.audio_url,
-          cmd.action_id,
-          cmd.expression,
-          cmd.expression_weight
-        )
+        // Auto-detect emotion if server didn't provide expression
+        let actionId = cmd.action_id
+        let expression = cmd.expression
+        let expressionWeight = cmd.expression_weight
+        if (!expression && cmd.text) {
+          const emotion = detectEmotion(cmd.text)
+          if (emotion.primary !== 'neutral') {
+            expression = emotion.expression
+            expressionWeight = emotion.expressionWeight
+            if (!actionId && emotion.animation) actionId = emotion.animation
+          }
+        }
+        await requestSpeakAudio(cmd.audio_url, actionId, expression, expressionWeight)
+        break
+      }
+      case 'user_typing':
+        notifyUserActivity('typing')
         break
       case 'reset':
         requestReset()

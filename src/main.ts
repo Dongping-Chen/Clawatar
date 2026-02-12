@@ -3,7 +3,7 @@ import { initScene, scene, camera, renderer, controls, clock, composer } from '.
 import { initLookAt, updateLookAt } from './look-at'
 import { updateBlink } from './blink'
 import { updateLipSync } from './lip-sync'
-import { applyExpressionOverrides } from './expressions'
+import { applyExpressionOverrides, updateExpressionTransitions } from './expressions'
 import { connectWS, initChatAndVoice } from './ws-control'
 import { initUI } from './ui'
 import { loadVRM } from './vrm-loader'
@@ -11,6 +11,7 @@ import { playBaseIdle } from './animation'
 import { updateBreathing } from './breathing'
 import { updateStateMachine } from './action-state-machine'
 import { initTouchReactions } from './touch-reactions'
+import { initReactiveIdle, updateReactiveIdle } from './reactive-idle'
 import { initEmotionBar } from './emotion-bar'
 import { initBackgrounds, updateBackgroundEffects } from './backgrounds'
 import { initCameraPresets, updateCameraPresets } from './camera-presets'
@@ -25,6 +26,11 @@ export const state: AppState = {
   mouseLookEnabled: true,
   characterState: 'idle',
 }
+
+// Pre-allocated vectors for render loop (avoid per-frame GC pressure)
+const _hipsWorld = new THREE.Vector3()
+const _headPos = new THREE.Vector3()
+const _pushDir = new THREE.Vector3()
 
 function showDropPrompt() {
   let prompt = document.getElementById('model-prompt')
@@ -114,6 +120,7 @@ function init() {
   }
 
   initTouchReactions(canvas)
+  initReactiveIdle(canvas)
   initEmotionBar()
   initBackgrounds()
   initCameraPresets()
@@ -176,6 +183,7 @@ function animate() {
 
   if (state.mixer) state.mixer.update(delta)
   updateBreathing(delta)
+  updateExpressionTransitions(delta)
   applyExpressionOverrides()
   updateBlink(elapsed)
   updateLipSync()
@@ -195,25 +203,20 @@ function animate() {
     // Also check the hips bone which some animations translate directly
     const hipsBone = state.vrm.humanoid?.getNormalizedBoneNode('hips')
     if (hipsBone) {
-      const hipsWorld = new THREE.Vector3()
-      hipsBone.getWorldPosition(hipsWorld)
-      // If hips moved outside bounds, push the whole VRM root back
-      if (hipsWorld.x < bounds.minX || hipsWorld.x > bounds.maxX ||
-          hipsWorld.z < bounds.minZ || hipsWorld.z > bounds.maxZ) {
-        // Calculate how far the hips are from the root
+      hipsBone.getWorldPosition(_hipsWorld)
+      if (_hipsWorld.x < bounds.minX || _hipsWorld.x > bounds.maxX ||
+          _hipsWorld.z < bounds.minZ || _hipsWorld.z > bounds.maxZ) {
         const rootPos = vrmScene.position
-        const hipsOffset = new THREE.Vector3(hipsWorld.x - rootPos.x, 0, hipsWorld.z - rootPos.z)
-        // Clamp hips world position
-        const clampedX = Math.max(bounds.minX, Math.min(bounds.maxX, hipsWorld.x))
-        const clampedZ = Math.max(bounds.minZ, Math.min(bounds.maxZ, hipsWorld.z))
-        // Adjust root so hips end up at clamped position
-        rootPos.x += (clampedX - hipsWorld.x)
-        rootPos.z += (clampedZ - hipsWorld.z)
+        const clampedX = Math.max(bounds.minX, Math.min(bounds.maxX, _hipsWorld.x))
+        const clampedZ = Math.max(bounds.minZ, Math.min(bounds.maxZ, _hipsWorld.z))
+        rootPos.x += (clampedX - _hipsWorld.x)
+        rootPos.z += (clampedZ - _hipsWorld.z)
       }
     }
   }
 
   updateStateMachine(elapsed)
+  updateReactiveIdle(elapsed, delta)
   updateActivityMode(elapsed)
   updateRoom(elapsed)
   updateBackgroundEffects(elapsed, delta)
@@ -226,16 +229,13 @@ function animate() {
   if (state.vrm) {
     const headBone = state.vrm.humanoid?.getNormalizedBoneNode('head')
     if (headBone) {
-      const headPos = new THREE.Vector3()
-      headBone.getWorldPosition(headPos)
-      const camToHead = headPos.clone().sub(camera.position)
-      const dist = camToHead.length()
-      // 1.5 units = safe for all VRM models (head mesh extends ~0.2 units from bone)
+      headBone.getWorldPosition(_headPos)
+      _pushDir.copy(_headPos).sub(camera.position)
+      const dist = _pushDir.length()
       const minSafeDist = 1.5
       if (dist < minSafeDist) {
-        // HARD push camera out — instant, no lerp, no negotiation
-        const pushDir = camToHead.normalize().multiplyScalar(-(minSafeDist - dist))
-        camera.position.add(pushDir)
+        _pushDir.normalize().multiplyScalar(-(minSafeDist - dist))
+        camera.position.add(_pushDir)
       }
     }
   }

@@ -9,16 +9,32 @@ import type { CrossfadeConfig } from './types'
 const animationCache = new Map<string, VRMAnimation>()
 let currentAction: AnimationAction | null = null
 let baseIdleAction: AnimationAction | null = null
+export let currentCategory: string = 'idle'
 
 export const crossfadeConfig: CrossfadeConfig = {
   minCrossfadeDuration: 0.35,
   maxCrossfadeDuration: 0.8,
 }
 
-function getCrossfadeDuration(fromClip: AnimationClip | null, toClip: AnimationClip | null): number {
-  // Use longer crossfade for very different actions
+const CATEGORY_CROSSFADE: Record<string, number> = {
+  'dance→idle': 1.2,
+  'dance→dance': 0.8,
+  'idle→action': 0.3,
+  'action→idle': 0.5,
+  'tired→idle': 0.8,
+  'idle→dance': 0.6,
+  'default': 0.4,
+}
+
+function getCrossfadeDuration(fromClip: AnimationClip | null, toClip: AnimationClip | null, toCategory?: string): number {
   if (!fromClip || !toClip) return crossfadeConfig.minCrossfadeDuration
-  // Heuristic: if durations differ a lot, use longer crossfade
+
+  const fromCat = currentCategory
+  const toCat = toCategory || 'action'
+  const key = `${fromCat}→${toCat}`
+  if (CATEGORY_CROSSFADE[key] !== undefined) return CATEGORY_CROSSFADE[key]
+
+  // Fallback: heuristic based on clip duration difference
   const ratio = Math.abs(fromClip.duration - toClip.duration) / Math.max(fromClip.duration, toClip.duration, 0.1)
   return crossfadeConfig.minCrossfadeDuration + ratio * (crossfadeConfig.maxCrossfadeDuration - crossfadeConfig.minCrossfadeDuration)
 }
@@ -31,7 +47,7 @@ async function getVRMA(actionId: string): Promise<VRMAnimation> {
   return vrma
 }
 
-export async function loadAndPlayAction(actionId: string, loop: boolean = false, onFinished?: () => void): Promise<AnimationAction | null> {
+export async function loadAndPlayAction(actionId: string, loop: boolean = false, onFinished?: () => void, category?: string): Promise<AnimationAction | null> {
   const { vrm, mixer } = state
   if (!vrm || !mixer) return null
 
@@ -39,7 +55,9 @@ export async function loadAndPlayAction(actionId: string, loop: boolean = false,
   const clip = createVRMAnimationClip(vrma, vrm)
   const newAction = mixer.clipAction(clip)
 
-  const fadeDuration = getCrossfadeDuration(currentAction?.getClip() ?? null, clip)
+  const targetCategory = category || 'action'
+  const fadeDuration = getCrossfadeDuration(currentAction?.getClip() ?? null, clip, targetCategory)
+  currentCategory = targetCategory
 
   newAction.reset()
   if (currentAction && currentAction !== newAction) {
@@ -70,26 +88,8 @@ export async function loadAndPlayAction(actionId: string, loop: boolean = false,
 }
 
 export async function playBaseIdle(actionId: string = '119_Idle') {
-  const { vrm, mixer } = state
-  if (!vrm || !mixer) return
-
-  const vrma = await getVRMA(actionId)
-  const clip = createVRMAnimationClip(vrma, vrm)
-  const action = mixer.clipAction(clip)
-
-  const fadeDuration = getCrossfadeDuration(currentAction?.getClip() ?? null, clip)
-
-  action.reset()
-  if (currentAction && currentAction !== action) {
-    currentAction.crossFadeTo(action, fadeDuration, true)
-  } else {
-    action.fadeIn(fadeDuration)
-  }
-  action.setLoop(LoopRepeat, Infinity)
-  action.play()
-
-  baseIdleAction = action
-  currentAction = action
+  const action = await loadAndPlayAction(actionId, true, undefined, 'idle')
+  if (action) baseIdleAction = action
 }
 
 export function getCurrentAction(): AnimationAction | null {

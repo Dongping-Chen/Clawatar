@@ -263,7 +263,7 @@ export function updateStateMachine(elapsed: number) {
       holdUntil = elapsed + idleConfig.idleMinHoldSeconds +
         Math.random() * (idleConfig.idleMaxHoldSeconds - idleConfig.idleMinHoldSeconds)
     })
-  }).catch(() => {
+  }, category).catch(() => {
     resetExpressions()
     setState('idle')
   })
