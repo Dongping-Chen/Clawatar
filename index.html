@@ -260,23 +260,24 @@
     }
 
     .section-header {
-      padding: 11px 14px;
+      padding: 10px 14px;
       cursor: pointer;
       user-select: none;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-size: 12px;
+      font-size: 11.5px;
       font-weight: 600;
-      color: #8b4d6d;
-      letter-spacing: 0.01em;
+      color: #9b6585;
+      letter-spacing: 0.03em;
       text-transform: lowercase;
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 241, 248, 0.55));
-      transition: background var(--ease-ui);
+      background: transparent;
+      transition: color var(--ease-ui), background var(--ease-ui);
     }
 
     .section-header:hover {
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 228, 241, 0.62));
+      color: #8b4d6d;
+      background: rgba(255, 228, 241, 0.3);
     }
 
     .section-header::after {
@@ -310,9 +311,14 @@
     }
 
     #controls button:hover {
-      transform: translateY(-1px);
-      filter: brightness(1.03);
-      box-shadow: 0 12px 22px rgba(225, 76, 128, 0.35);
+      transform: translateY(-2px) scale(1.04);
+      filter: brightness(1.06);
+      box-shadow: 0 14px 26px rgba(225, 76, 128, 0.38);
+    }
+
+    #controls button:active {
+      transform: translateY(0) scale(0.97);
+      box-shadow: 0 4px 10px rgba(225, 76, 128, 0.25);
     }
 
     .control-select {
@@ -558,9 +564,14 @@
     }
 
     .emotion-btn:hover {
-      transform: translateY(-2px);
-      filter: brightness(1.04);
-      box-shadow: 0 0 0 4px rgba(241, 159, 195, 0.2), 0 10px 18px rgba(201, 88, 132, 0.28);
+      transform: translateY(-3px) scale(1.12);
+      filter: brightness(1.06);
+      box-shadow: 0 0 0 4px rgba(241, 159, 195, 0.25), 0 12px 22px rgba(201, 88, 132, 0.32);
+    }
+
+    .emotion-btn:active {
+      transform: translateY(0) scale(0.92);
+      box-shadow: 0 4px 8px rgba(201, 88, 132, 0.2);
     }
 
     .emotion-btn.is-popping {
@@ -649,12 +660,12 @@
     }
 
     .chat-bubble {
-      max-width: 80%;
-      border-radius: 18px;
-      padding: 9px 12px;
-      line-height: 1.4;
-      box-shadow: 0 8px 20px rgba(187, 94, 134, 0.16);
-      border: 1px solid rgba(255, 255, 255, 0.62);
+      max-width: 78%;
+      border-radius: 20px;
+      padding: 10px 14px;
+      line-height: 1.45;
+      box-shadow: 0 4px 12px rgba(187, 94, 134, 0.1);
+      border: none;
       transition: transform var(--ease-ui), box-shadow var(--ease-ui);
     }
 
@@ -700,17 +711,15 @@
     }
 
     .chat-msg.mine .chat-bubble {
-      color: #693951;
-      background: linear-gradient(145deg, var(--bubble-user-1), var(--bubble-user-2));
-      border-bottom-right-radius: 8px;
-      border-color: rgba(236, 64, 122, 0.22);
+      color: #fff;
+      background: linear-gradient(135deg, #FF6B9D, #ec407a);
+      border-bottom-right-radius: 6px;
     }
 
     .chat-msg.theirs .chat-bubble {
-      color: #543f52;
-      background: var(--bubble-avatar);
-      border-bottom-left-radius: 8px;
-      border-color: rgba(255, 255, 255, 0.85);
+      color: #4a3548;
+      background: rgba(255, 255, 255, 0.92);
+      border-bottom-left-radius: 6px;
     }
 
     .chat-msg.system .chat-bubble {
@@ -765,9 +774,14 @@
 
     #chat-send-btn:hover,
     #mic-btn:hover {
-      transform: translateY(-1px);
-      filter: brightness(1.03);
-      box-shadow: 0 12px 22px rgba(225, 76, 128, 0.35);
+      transform: translateY(-2px) scale(1.06);
+      filter: brightness(1.06);
+      box-shadow: 0 14px 26px rgba(225, 76, 128, 0.38);
+    }
+
+    #chat-send-btn:active,
+    #mic-btn:active {
+      transform: translateY(0) scale(0.95);
     }
 
     #mic-btn.recording {
@@ -909,8 +923,16 @@
   </style>
 </head>
 <body>
+  <div id="animated-bg"></div>
+  <canvas id="particles-canvas"></canvas>
   <canvas id="canvas"></canvas>
   <div id="drop-overlay">Drop your VRM model here~ ✨</div>
+
+  <div id="name-card">
+    <span class="name-text">Reze</span>
+    <span class="name-heart">💖</span>
+    <span class="mood-text" id="mood-text">feeling cheerful~</span>
+  </div>
 
   <div id="controls">
     <div class="panel-title">
@@ -1018,5 +1040,76 @@
 
   <div id="status"><span class="ws-dot disconnected" id="ws-dot"></span>WS: disconnected</div>
   <script type="module" src="/src/main.ts"></script>
+  <script>
+  (function() {
+    const canvas = document.getElementById('particles-canvas');
+    const ctx = canvas.getContext('2d');
+    let W, H;
+    function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
+    resize();
+    window.addEventListener('resize', resize);
+
+    const SHAPES = ['circle', 'diamond', 'petal', 'star'];
+    const COLORS = ['rgba(255,107,157,', 'rgba(236,64,122,', 'rgba(209,196,233,', 'rgba(255,214,229,', 'rgba(248,168,196,'];
+    const particles = [];
+    const COUNT = 35;
+
+    for (let i = 0; i < COUNT; i++) {
+      particles.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        size: 8 + Math.random() * 16,
+        shape: SHAPES[Math.floor(Math.random() * SHAPES.length)],
+        color: COLORS[Math.floor(Math.random() * COLORS.length)],
+        opacity: 0.15 + Math.random() * 0.3,
+        speedY: -(0.15 + Math.random() * 0.4),
+        speedX: (Math.random() - 0.5) * 0.3,
+        rotation: Math.random() * Math.PI * 2,
+        rotSpeed: (Math.random() - 0.5) * 0.01,
+      });
+    }
+
+    function drawShape(p) {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rotation);
+      ctx.fillStyle = p.color + p.opacity + ')';
+      const s = p.size;
+      if (p.shape === 'circle') {
+        ctx.beginPath(); ctx.arc(0, 0, s/2, 0, Math.PI*2); ctx.fill();
+      } else if (p.shape === 'diamond') {
+        ctx.beginPath(); ctx.moveTo(0,-s/2); ctx.lineTo(s/3,0); ctx.lineTo(0,s/2); ctx.lineTo(-s/3,0); ctx.closePath(); ctx.fill();
+      } else if (p.shape === 'petal') {
+        ctx.beginPath(); ctx.ellipse(0, 0, s/4, s/2, 0, 0, Math.PI*2); ctx.fill();
+      } else if (p.shape === 'star') {
+        ctx.beginPath();
+        for (let i = 0; i < 5; i++) {
+          const a = (i*4*Math.PI/5) - Math.PI/2;
+          const r = i === 0 ? s/2 : s/2;
+          ctx[i===0?'moveTo':'lineTo'](Math.cos(a)*s/2, Math.sin(a)*s/2);
+          const b = a + 2*Math.PI/5;
+          ctx.lineTo(Math.cos(b)*s/5, Math.sin(b)*s/5);
+        }
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function animate() {
+      ctx.clearRect(0, 0, W, H);
+      for (const p of particles) {
+        p.y += p.speedY;
+        p.x += p.speedX;
+        p.rotation += p.rotSpeed;
+        if (p.y < -p.size) { p.y = H + p.size; p.x = Math.random() * W; }
+        if (p.x < -p.size) p.x = W + p.size;
+        if (p.x > W + p.size) p.x = -p.size;
+        drawShape(p);
+      }
+      requestAnimationFrame(animate);
+    }
+    animate();
+  })();
+  </script>
 </body>
 </html>
