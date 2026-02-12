@@ -11,65 +11,102 @@ export const idleConfig: IdleConfig = {
   idleMaxHoldSeconds: 18,    // Hold at most 18s (was 30)
 }
 
-// Categorized idle animations for more lifelike behavior
-// Booth animations (booth_*) are higher quality companion-style animations
+// DM Motionpack animations organized by emotion (from vrma_catalog.json)
+// These are high-quality Booth companion animations
 const IDLE_CATEGORIES = {
-  // Relaxed micro-movements (most common — subtle, natural)
-  relaxed: [
-    '129_Looking Around',
-    '162_Weight Shift Gesture',
-    '128_Look Around',
-    '127_Leaning',
-    '65_Relieved Sigh',
-    '52_Looking',
-  ],
-  // Active / alert gestures (engaged feel)
-  active: [
-    '88_Thinking',
-    '39_Hand Raising',
-    '118_Head Nod Yes',
-    '55_Nervously Look Around',
-    '96_Arm Stretching',
-    '131_Neck Stretching',
-  ],
-  // Happy / cheerful (character enjoys being here)
+  // Happy — cheerful greetings, cute gestures, peace signs (23 anims)
   happy: [
-    '40_Happy Idle',
-    '116_Happy Hand Gesture',
-    '72_Sitting Clap',
-    '74_Sitting Thumbs Up',
+    'dm_4',   // wave_greet
+    'dm_10',  // raise_hand_bow_greet
+    'dm_11',  // raise_hand_bow_greet_2
+    'dm_24',  // cat_paw_cute
+    'dm_26',  // jump_peace_sign
+    'dm_27',  // hands_behind_sway
+    'dm_29',  // heart_gesture
+    'dm_41',  // happy_sway
+    'dm_42',  // cute_attention_call
+    'dm_44',  // lean_to_side_curious
+    'dm_46',  // crossed_legs_hands_hips
+    'dm_47',  // high_five_request
+    'dm_48',  // fist_bump_request
+    'dm_124', // standing_idle_happy_shy
+    'dm_125', // standing_idle_hands_near_face
   ],
-  // Self-care / comfort (makes character feel alive)
-  selfCare: [
-    '108_Drinking',
-    '163_Yawn',
-    '96_Arm Stretching',
-    '131_Neck Stretching',
+  // Neutral — presenting, thinking, natural waiting (36 anims)
+  neutral: [
+    'dm_0',   // present_alternate_hands
+    'dm_3',   // chin_rest_think
+    'dm_5',   // present_one_hand
+    'dm_6',   // present_one_hand_2
+    'dm_7',   // present_one_hand_3
+    'dm_120', // standing_idle_natural_wait
+    'dm_121', 'dm_122', 'dm_123',
+    'dm_126', 'dm_127', 'dm_128',
+    'dm_130', 'dm_131', 'dm_132', 'dm_133',
+    'dm_134', 'dm_135', 'dm_136', 'dm_137',
   ],
-  // DM Motionpack — real companion idle animations from Booth (140 total)
-  // Split into groups to try a sampling of them
-  dm_cute: [
-    'dm_0', 'dm_1', 'dm_2', 'dm_3', 'dm_4', 'dm_5', 'dm_6', 'dm_7',
-    'dm_8', 'dm_9', 'dm_10', 'dm_11', 'dm_12', 'dm_13', 'dm_14', 'dm_15',
-    'dm_16', 'dm_17', 'dm_18', 'dm_19', 'dm_20', 'dm_21', 'dm_22', 'dm_23',
-    'dm_24', 'dm_25', 'dm_26', 'dm_27', 'dm_28', 'dm_29', 'dm_30',
+  // Loving — heart gestures, blowing kisses (7 anims)
+  loving: [
+    'dm_16',  // hands_heart_speak
+    'dm_20',  // blow_kiss
+    'dm_21',  // blow_kiss_bow
+    'dm_29',  // heart_gesture
+    'dm_30',  // half_heart_right
+    'dm_31',  // half_heart_left
+    'dm_32',  // big_heart
   ],
-  dm_variety: [
-    'dm_31', 'dm_32', 'dm_33', 'dm_34', 'dm_35', 'dm_36', 'dm_37', 'dm_38',
-    'dm_39', 'dm_40', 'dm_50', 'dm_60', 'dm_70', 'dm_80', 'dm_90', 'dm_100',
-    'dm_110', 'dm_120', 'dm_130', 'dm_139',
+  // Excited — cheering, jumping, celebrating (8 anims)
+  excited: [
+    'dm_2',   // cheer_arms_swing
+    'dm_15',  // fist_pump_speak
+    'dm_18',  // big_jump_celebrate
+    'dm_19',  // small_jump_attention
+    'dm_28',  // hands_hips_cheer
+    'dm_34',  // thumbs_up_dance
+  ],
+  // Shy — cute fidgeting, finger poking (5 anims)
+  shy: [
+    'dm_40',  // finger_poke_shy
+    'dm_51',  // shy_twist_chest
+    'dm_124', // standing_idle_happy_shy
+    'dm_125', // standing_idle_hands_near_face
+    'dm_129', // standing_idle_cute_shy
+  ],
+  // Tired — yawning, sleepy, stretching (11 anims, for evening/night)
+  tired: [
+    'dm_17',  // drooping_tired
+    'dm_110', // yawn_tired
+    'dm_111', // tired_rub_eyes
+    'dm_112', // lie_down_yawn_stand
+    'dm_113', // lie_down_rub_eyes_stand
+    'dm_114', 'dm_115', 'dm_116', 'dm_117', 'dm_118', 'dm_119',
+  ],
+  // Stretching — morning/self-care (10 anims)
+  stretching: [
+    'dm_80', 'dm_81', 'dm_82', 'dm_83', 'dm_84',
+    'dm_85', 'dm_86', 'dm_87', 'dm_88', 'dm_89',
+  ],
+  // Proud — confident, cool poses (8 anims)
+  proud: [
+    'dm_14',  // arms_up_tsundere
+    'dm_23',  // finger_guns_cool
+    'dm_33',  // single_finger_gun
+    'dm_34',  // thumbs_up_dance
+    'dm_36',  // confident_dance
+    'dm_37', 'dm_38', 'dm_39',
   ],
 }
 
 // Default weights (overridden by time-of-day)
 const CATEGORY_WEIGHTS: Array<[keyof typeof IDLE_CATEGORIES, number]> = [
-  ['dm_cute', 0.30],     // DM Motionpack — best companion animations
-  ['dm_variety', 0.15],  // DM Motionpack variety
-  ['relaxed', 0.18],
-  ['active', 0.12],
-  ['happy', 0.12],
-  ['selfCare', 0.08],
-  ['relaxed', 0.05],     // extra relaxed weight
+  ['neutral', 0.25],
+  ['happy', 0.22],
+  ['shy', 0.12],
+  ['loving', 0.10],
+  ['excited', 0.08],
+  ['proud', 0.08],
+  ['stretching', 0.08],
+  ['tired', 0.07],
 ]
 
 // Time-of-day weight adjustments
@@ -77,44 +114,52 @@ function getTimeAdjustedWeights(): Array<[keyof typeof IDLE_CATEGORIES, number]>
   const hour = new Date().getHours()
 
   if (hour >= 23 || hour < 6) {
-    // Late night / early morning — sleepy, calm
+    // Late night — sleepy, tired, cozy
     return [
-      ['dm_cute', 0.30],
-      ['relaxed', 0.25],
-      ['selfCare', 0.20],   // Yawning, stretching
-      ['dm_variety', 0.15],
-      ['happy', 0.05],
-      ['active', 0.05],
+      ['tired', 0.40],
+      ['neutral', 0.20],
+      ['shy', 0.15],
+      ['loving', 0.10],
+      ['happy', 0.10],
+      ['stretching', 0.05],
+      ['excited', 0.0],
+      ['proud', 0.0],
     ]
   } else if (hour >= 6 && hour < 10) {
-    // Morning — waking up, stretching
+    // Morning — stretching, waking up, gradually cheerful
     return [
-      ['selfCare', 0.25],
-      ['dm_cute', 0.25],
-      ['relaxed', 0.20],
-      ['dm_variety', 0.12],
-      ['active', 0.10],
-      ['happy', 0.08],
+      ['stretching', 0.30],
+      ['tired', 0.15],
+      ['neutral', 0.20],
+      ['happy', 0.15],
+      ['shy', 0.10],
+      ['excited', 0.05],
+      ['loving', 0.03],
+      ['proud', 0.02],
     ]
   } else if (hour >= 10 && hour < 18) {
-    // Daytime — active, cheerful
+    // Daytime — active, happy, confident
     return [
-      ['dm_cute', 0.28],
-      ['active', 0.20],
-      ['happy', 0.18],
-      ['dm_variety', 0.14],
-      ['relaxed', 0.12],
-      ['selfCare', 0.08],
+      ['happy', 0.25],
+      ['neutral', 0.20],
+      ['excited', 0.15],
+      ['proud', 0.12],
+      ['loving', 0.10],
+      ['shy', 0.08],
+      ['stretching', 0.05],
+      ['tired', 0.05],
     ]
   } else {
-    // Evening (18-23) — winding down, comfortable
+    // Evening (18-23) — winding down, sweet, relaxed
     return [
-      ['dm_cute', 0.30],
-      ['relaxed', 0.22],
-      ['dm_variety', 0.18],
-      ['happy', 0.12],
-      ['selfCare', 0.10],
-      ['active', 0.08],
+      ['neutral', 0.22],
+      ['happy', 0.20],
+      ['loving', 0.15],
+      ['shy', 0.15],
+      ['tired', 0.10],
+      ['stretching', 0.08],
+      ['excited', 0.05],
+      ['proud', 0.05],
     ]
   }
 }
