@@ -101,6 +101,15 @@ async function handleCommand(cmd: any) {
       case 'adjust_camera_preset':
         import('./camera-presets').then(m => m.adjustPresetOffset(cmd.preset, cmd.distance ?? 1.0, cmd.height ?? 0))
         break
+      case 'set_room_mode':
+        import('./room-scene').then(m => {
+          if (cmd.enabled) m.enableRoomMode()
+          else m.disableRoomMode()
+        })
+        break
+      case 'set_room_theme':
+        import('./room-scene').then(m => m.setRoomTheme(cmd.theme ?? 'cozy'))
+        break
     }
     // Send ack for commands, but NOT for status messages (prevents broadcast loops)
     if (cmd.type !== 'speak_audio' && cmd.type !== 'tts_error' && !cmd.status) {
