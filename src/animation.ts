@@ -11,8 +11,8 @@ let currentAction: AnimationAction | null = null
 let baseIdleAction: AnimationAction | null = null
 
 export const crossfadeConfig: CrossfadeConfig = {
-  minCrossfadeDuration: 0.18,
-  maxCrossfadeDuration: 1.4,
+  minCrossfadeDuration: 0.35,
+  maxCrossfadeDuration: 0.8,
 }
 
 function getCrossfadeDuration(fromClip: AnimationClip | null, toClip: AnimationClip | null): number {
@@ -41,12 +41,12 @@ export async function loadAndPlayAction(actionId: string, loop: boolean = false,
 
   const fadeDuration = getCrossfadeDuration(currentAction?.getClip() ?? null, clip)
 
-  if (currentAction) {
-    currentAction.fadeOut(fadeDuration)
-  }
-
   newAction.reset()
-  newAction.fadeIn(fadeDuration)
+  if (currentAction && currentAction !== newAction) {
+    currentAction.crossFadeTo(newAction, fadeDuration, true)
+  } else {
+    newAction.fadeIn(fadeDuration)
+  }
   if (!loop) {
     newAction.setLoop(LoopOnce, 1)
     newAction.clampWhenFinished = true
@@ -79,12 +79,12 @@ export async function playBaseIdle(actionId: string = '119_Idle') {
 
   const fadeDuration = getCrossfadeDuration(currentAction?.getClip() ?? null, clip)
 
-  if (currentAction && currentAction !== action) {
-    currentAction.fadeOut(fadeDuration)
-  }
-
   action.reset()
-  action.fadeIn(fadeDuration)
+  if (currentAction && currentAction !== action) {
+    currentAction.crossFadeTo(action, fadeDuration, true)
+  } else {
+    action.fadeIn(fadeDuration)
+  }
   action.setLoop(LoopRepeat, Infinity)
   action.play()
 

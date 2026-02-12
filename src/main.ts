@@ -8,6 +8,7 @@ import { connectWS, initChatAndVoice } from './ws-control'
 import { initUI } from './ui'
 import { loadVRM } from './vrm-loader'
 import { playBaseIdle } from './animation'
+import { updateBreathing } from './breathing'
 import { updateStateMachine } from './action-state-machine'
 import { initTouchReactions } from './touch-reactions'
 import { initEmotionBar } from './emotion-bar'
@@ -174,6 +175,7 @@ function animate() {
   const elapsed = clock.elapsedTime
 
   if (state.mixer) state.mixer.update(delta)
+  updateBreathing(delta)
   applyExpressionOverrides()
   updateBlink(elapsed)
   updateLipSync()
