@@ -13,7 +13,7 @@ import { initTouchReactions } from './touch-reactions'
 import { initEmotionBar } from './emotion-bar'
 import { initBackgrounds, updateBackgroundEffects } from './backgrounds'
 import { initCameraPresets, updateCameraPresets } from './camera-presets'
-import { initRoomScene, enableRoomMode, isRoomMode, getWalkableBounds } from './room-scene'
+import { initRoomScene, enableRoomMode, isRoomMode, getWalkableBounds, updateRoom } from './room-scene'
 import type { AppState } from './types'
 
 export const state: AppState = {
@@ -211,6 +211,7 @@ function animate() {
   }
 
   updateStateMachine(elapsed)
+  updateRoom(elapsed)
   updateBackgroundEffects(elapsed, delta)
   updateCameraPresets(performance.now() / 1000)
 

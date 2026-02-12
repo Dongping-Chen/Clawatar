@@ -283,7 +283,7 @@ function createChair(): THREE.Group {
   }
 
   // Tucked under desk (negative Z, near back wall)
-  chair.position.set(-0.3, 0, -HALF_D + 0.7)
+  chair.position.set(-0.3, 0, -HALF_D + 1.05)
   return chair
 }
 
@@ -320,21 +320,66 @@ function createBed(): THREE.Group {
   blanket.position.set(0, bedH + 0.14, 0.25)
   bed.add(blanket)
 
-  // Stuffed animal on bed
-  const plushBody = new THREE.Mesh(
-    new THREE.SphereGeometry(0.1, 12, 10),
-    mat(0xffd4b8, { roughness: 0.95 })
-  )
-  plushBody.position.set(-0.2, bedH + 0.22, 0.1)
-  plushBody.castShadow = true
-  bed.add(plushBody)
-  const plushHead = new THREE.Mesh(
-    new THREE.SphereGeometry(0.07, 10, 8),
-    mat(0xffd4b8, { roughness: 0.95 })
-  )
-  plushHead.position.set(-0.2, bedH + 0.34, 0.1)
-  plushHead.castShadow = true
-  bed.add(plushHead)
+  // Sleeping cat on bed — curled up, detailed procedural cat
+  const catGroup = new THREE.Group()
+  catGroup.name = 'bed-cat'
+  const catFur = mat(0xf5deb3, { roughness: 0.95 }) // Wheat/cream color
+  const catDarkFur = mat(0xd4a574, { roughness: 0.9 }) // Tabby stripes
+  // Body — elongated flattened sphere (curled up sleeping pose)
+  const catBody = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 10), catFur)
+  catBody.scale.set(1.3, 0.55, 1.0) // Wide, flat, sleeping shape
+  catBody.castShadow = true
+  catGroup.add(catBody)
+  // Head — tucked against body
+  const catHead = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 10), catFur)
+  catHead.position.set(0.13, 0.03, 0.08)
+  catHead.castShadow = true
+  catGroup.add(catHead)
+  // Ears — two upright triangles
+  for (const side of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.045, 4), catDarkFur)
+    ear.position.set(0.15 + side * 0.04, 0.1, 0.08)
+    ear.rotation.z = side * 0.15
+    catGroup.add(ear)
+  }
+  // Eyes — closed (horizontal lines = sleeping)
+  const eyeMat = mat(0x333333, { roughness: 0.3 })
+  for (const side of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.004, 0.005), eyeMat)
+    eye.position.set(0.19, 0.04, 0.08 + side * 0.03)
+    catGroup.add(eye)
+  }
+  // Nose — tiny pink
+  const catNose = new THREE.Mesh(new THREE.SphereGeometry(0.008, 6, 4), mat(0xffaaaa))
+  catNose.position.set(0.21, 0.02, 0.08)
+  catGroup.add(catNose)
+  // Tail — curved, wraps around body
+  const tailSegments = 8
+  for (let i = 0; i < tailSegments; i++) {
+    const t = i / tailSegments
+    const tailPiece = new THREE.Mesh(
+      new THREE.SphereGeometry(0.018 - t * 0.008, 6, 4),
+      i % 2 === 0 ? catFur : catDarkFur // Striped tail
+    )
+    const angle = t * Math.PI * 0.8 // Curl around
+    tailPiece.position.set(
+      -0.14 - Math.sin(angle) * (0.08 + t * 0.06),
+      0.0,
+      -0.02 + Math.cos(angle) * (0.08 + t * 0.06)
+    )
+    catGroup.add(tailPiece)
+  }
+  // Front paws — two small ovals tucked under head
+  for (const side of [-1, 1]) {
+    const paw = new THREE.Mesh(new THREE.SphereGeometry(0.02, 6, 4), catFur)
+    paw.scale.set(1, 0.5, 1.3)
+    paw.position.set(0.16, -0.02, 0.08 + side * 0.05)
+    catGroup.add(paw)
+  }
+  // Position on bed
+  catGroup.position.set(-0.2, bedH + 0.2, 0.3)
+  catGroup.rotation.y = 0.3 // Slightly angled
+  bed.add(catGroup)
 
   // Bed against right wall, headboard toward back-right
   // Rotated so length runs along Z axis against right wall
@@ -502,15 +547,38 @@ function createCatFigure(): THREE.Group {
 
 function createThrowPillow(): THREE.Group {
   const group = new THREE.Group()
-  const pillow = new THREE.Mesh(
-    new THREE.SphereGeometry(0.08, 8, 6),
-    mat(0xffb347, { roughness: 0.9 })
-  )
-  pillow.scale.set(1, 0.6, 1)
-  pillow.position.y = 0
-  group.add(pillow)
-  // On chair seat
-  group.position.set(-0.3, 0.48, -HALF_D + 0.7)
+  // Cat-shaped pillow (cute neko cushion)
+  const pillowMat = mat(0xffd4a8, { roughness: 0.95 }) // Warm orange-cream
+  // Body — flattened sphere
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 8), pillowMat)
+  body.scale.set(1.2, 0.5, 1.0)
+  body.position.y = 0
+  group.add(body)
+  // Head — smaller sphere
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), pillowMat)
+  head.position.set(0, 0.04, 0.12)
+  group.add(head)
+  // Ears — two small triangles
+  const earMat = mat(0xffb888, { roughness: 0.9 })
+  for (const side of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.06, 4), earMat)
+    ear.position.set(side * 0.06, 0.12, 0.12)
+    ear.rotation.z = side * 0.2
+    group.add(ear)
+  }
+  // Eyes — two tiny dark dots
+  const eyeMat = mat(0x333333, { roughness: 0.5 })
+  for (const side of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.015, 6, 4), eyeMat)
+    eye.position.set(side * 0.035, 0.05, 0.2)
+    group.add(eye)
+  }
+  // Nose — tiny pink triangle
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.01, 4, 4), mat(0xff8888))
+  nose.position.set(0, 0.02, 0.2)
+  group.add(nose)
+  // On chair seat (updated position to match new chair z)
+  group.position.set(-0.3, 0.48, -HALF_D + 1.05)
   return group
 }
 
@@ -993,6 +1061,17 @@ export function disableRoomMode(): void {
 
 export function isRoomMode(): boolean {
   return _isRoomMode
+}
+
+/** Update room animations (call every frame) */
+export function updateRoom(elapsed: number): void {
+  if (!_isRoomMode || !roomGroup) return
+  // Cat breathing animation — subtle scale pulse on body
+  const cat = roomGroup.getObjectByName('bed-cat') as THREE.Group | undefined
+  if (cat && cat.children[0]) {
+    const breathe = 1.0 + Math.sin(elapsed * 1.5) * 0.03 // Gentle breathing
+    cat.children[0].scale.set(1.3, 0.55 * breathe, 1.0)
+  }
 }
 
 export function setRoomTheme(theme: 'cozy' | 'study' | 'night'): void {
