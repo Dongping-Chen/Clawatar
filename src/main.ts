@@ -118,7 +118,8 @@ function hideAllUI() {
   const style = document.createElement('style')
   style.textContent = `
     #controls, #chat-container, #emotion-bar, #drop-overlay,
-    #status, #model-prompt, body::before {
+    #status, #model-prompt, #particles-canvas, #animated-bg,
+    #name-card, body::before {
       display: none !important;
     }
     body {
