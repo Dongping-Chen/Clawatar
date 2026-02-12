@@ -11,8 +11,6 @@ let currentTheme: 'cozy' | 'study' | 'night' = 'cozy'
 const ROOM_W = 4
 const ROOM_D = 3.5
 const ROOM_H = 3
-// Room center offset: character at origin, room surrounds them
-// Back wall at z = -ROOM_D/2, front open, left wall at x = -ROOM_W/2, right at x = ROOM_W/2
 const HALF_W = ROOM_W / 2
 const HALF_D = ROOM_D / 2
 
@@ -21,15 +19,27 @@ function mat(color: number, opts: Partial<THREE.MeshStandardMaterialParameters> 
 }
 
 function box(w: number, h: number, d: number, material: THREE.Material): THREE.Mesh {
-  return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material)
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material)
+  m.castShadow = true
+  m.receiveShadow = true
+  return m
 }
 
 function cyl(rT: number, rB: number, h: number, material: THREE.Material, seg = 16): THREE.Mesh {
-  return new THREE.Mesh(new THREE.CylinderGeometry(rT, rB, h, seg), material)
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rT, rB, h, seg), material)
+  m.castShadow = true
+  m.receiveShadow = true
+  return m
+}
+
+/** Add dark edge outlines to a mesh for visual definition */
+function addEdgeOutline(mesh: THREE.Mesh, color = 0x000000, opacity = 0.08): void {
+  const edges = new THREE.EdgesGeometry(mesh.geometry)
+  const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color, transparent: true, opacity }))
+  mesh.add(line)
 }
 
 function createFloor(): THREE.Mesh {
-  // Wood plank floor
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(ROOM_W, ROOM_D),
     mat(0xc49a6c, { roughness: 0.75 })
@@ -40,33 +50,81 @@ function createFloor(): THREE.Mesh {
   return floor
 }
 
+function createCeiling(): THREE.Group {
+  const group = new THREE.Group()
+  // Main ceiling
+  const ceiling = new THREE.Mesh(
+    new THREE.PlaneGeometry(ROOM_W, ROOM_D),
+    mat(0xf0e8de, { roughness: 0.9 })
+  )
+  ceiling.rotation.x = Math.PI / 2
+  ceiling.position.set(0, ROOM_H, 0)
+  group.add(ceiling)
+
+  // Recessed trim (slightly inset rectangle)
+  const trimW = ROOM_W - 0.4, trimD = ROOM_D - 0.4
+  const trim = new THREE.Mesh(
+    new THREE.PlaneGeometry(trimW, trimD),
+    mat(0xe8dfd4, { roughness: 0.95 })
+  )
+  trim.rotation.x = Math.PI / 2
+  trim.position.set(0, ROOM_H - 0.01, 0)
+  group.add(trim)
+  return group
+}
+
+function createBaseboards(): THREE.Group {
+  const group = new THREE.Group()
+  const bbMat = mat(0xa88060, { roughness: 0.7 })
+  const bbH = 0.08, bbT = 0.02
+
+  // Back wall baseboard
+  const back = box(ROOM_W, bbH, bbT, bbMat)
+  back.position.set(0, bbH / 2, -HALF_D + bbT / 2)
+  back.castShadow = false
+  group.add(back)
+
+  // Left wall
+  const left = box(bbT, bbH, ROOM_D, bbMat)
+  left.position.set(-HALF_W + bbT / 2, bbH / 2, 0)
+  left.castShadow = false
+  group.add(left)
+
+  // Right wall
+  const right = box(bbT, bbH, ROOM_D, bbMat)
+  right.position.set(HALF_W - bbT / 2, bbH / 2, 0)
+  right.castShadow = false
+  group.add(right)
+
+  return group
+}
+
 function createWalls(): THREE.Group {
   const walls = new THREE.Group()
   const wallMat = mat(0xf5ede3, { roughness: 0.9 })
 
-  // Back wall (with window hole) — at z = -HALF_D
-  // We'll build it as 4 pieces around the window
+  // Back wall with window hole
   const winW = 1.4, winH = 1.2, winBottom = 1.2
   const winTop = winBottom + winH
-  // Left of window
   const blW = (ROOM_W - winW) / 2
   const bl = box(blW, ROOM_H, 0.1, wallMat)
   bl.position.set(-HALF_W + blW / 2, ROOM_H / 2, -HALF_D)
+  bl.castShadow = false; bl.receiveShadow = true
   walls.add(bl)
-  // Right of window
   const br = box(blW, ROOM_H, 0.1, wallMat)
   br.position.set(HALF_W - blW / 2, ROOM_H / 2, -HALF_D)
+  br.castShadow = false; br.receiveShadow = true
   walls.add(br)
-  // Above window
   const ba = box(winW, ROOM_H - winTop, 0.1, wallMat)
   ba.position.set(0, winTop + (ROOM_H - winTop) / 2, -HALF_D)
+  ba.castShadow = false
   walls.add(ba)
-  // Below window
   const bb = box(winW, winBottom, 0.1, wallMat)
   bb.position.set(0, winBottom / 2, -HALF_D)
+  bb.castShadow = false
   walls.add(bb)
 
-  // Window glow plane
+  // Window glow
   const windowGlow = new THREE.Mesh(
     new THREE.PlaneGeometry(winW, winH),
     new THREE.MeshBasicMaterial({ color: 0xffe4b0, transparent: true, opacity: 0.6 })
@@ -78,47 +136,63 @@ function createWalls(): THREE.Group {
   // Window frame
   const frameMat = mat(0xd4b08c, { roughness: 0.7 })
   const frameT = 0.04
-  // Horizontal bars
   for (const y of [winBottom, winTop]) {
     const bar = box(winW + 0.08, frameT, 0.06, frameMat)
     bar.position.set(0, y, -HALF_D + 0.03)
+    bar.castShadow = false
     walls.add(bar)
   }
-  // Vertical bars
   for (const x of [-winW / 2, 0, winW / 2]) {
     const bar = box(frameT, winH, 0.06, frameMat)
     bar.position.set(x, winBottom + winH / 2, -HALF_D + 0.03)
+    bar.castShadow = false
     walls.add(bar)
   }
 
-  // Left wall — at x = -HALF_W
+  // Curtains
+  const curtainMat = mat(0xf0e0e8, { roughness: 0.95 })
+  for (const side of [-1, 1]) {
+    const curtain = box(0.25, winH + 0.3, 0.05, curtainMat)
+    curtain.position.set(side * (winW / 2 + 0.18), winBottom + winH / 2 + 0.05, -HALF_D + 0.06)
+    curtain.castShadow = true
+    walls.add(curtain)
+  }
+
+  // Window sill
+  const sill = box(winW + 0.16, 0.03, 0.12, frameMat)
+  sill.position.set(0, winBottom - 0.015, -HALF_D + 0.06)
+  sill.castShadow = false
+  walls.add(sill)
+
+  // Left wall
   const leftWall = box(0.1, ROOM_H, ROOM_D, wallMat)
   leftWall.position.set(-HALF_W, ROOM_H / 2, 0)
+  leftWall.castShadow = false; leftWall.receiveShadow = true
   walls.add(leftWall)
 
-  // Right wall (with door outline) — at x = HALF_W
-  const doorW = 0.8, doorH = 2.1
-  // Above door
-  const rd = box(0.1, ROOM_H - doorH, ROOM_D * 0.3, wallMat)
-  rd.position.set(HALF_W, doorH + (ROOM_H - doorH) / 2, -HALF_D + ROOM_D * 0.15)
-  walls.add(rd)
-  // Right wall - main section
-  const rMain = box(0.1, ROOM_H, ROOM_D * 0.7, wallMat)
-  rMain.position.set(HALF_W, ROOM_H / 2, -HALF_D + ROOM_D * 0.3 + ROOM_D * 0.35)
-  walls.add(rMain)
-  // Right wall - left of door
-  // Actually let's simplify: full right wall + door frame overlay
+  // Right wall
   const rightWall = box(0.1, ROOM_H, ROOM_D, wallMat)
   rightWall.position.set(HALF_W, ROOM_H / 2, 0)
+  rightWall.castShadow = false; rightWall.receiveShadow = true
   walls.add(rightWall)
-  // Remove the partial pieces
-  walls.remove(rd, rMain)
 
   // Door frame on right wall
   const doorFrameMat = mat(0xc49a6c, { roughness: 0.7 })
+  const doorW = 0.8, doorH = 2.1
   const doorFrame = box(0.06, doorH, doorW, doorFrameMat)
   doorFrame.position.set(HALF_W - 0.02, doorH / 2, -HALF_D + 0.6)
+  doorFrame.castShadow = false
   walls.add(doorFrame)
+
+  // Subtle wall stripe pattern (semi-transparent overlay on back wall)
+  const stripeMat = new THREE.MeshBasicMaterial({
+    color: 0xe8ddd0, transparent: true, opacity: 0.12, side: THREE.DoubleSide
+  })
+  for (let i = 0; i < 8; i++) {
+    const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.04, ROOM_H), stripeMat)
+    stripe.position.set(-HALF_W + 0.5 + i * 0.5, ROOM_H / 2, -HALF_D + 0.06)
+    walls.add(stripe)
+  }
 
   return walls
 }
@@ -128,15 +202,15 @@ function createDesk(): THREE.Group {
   const woodMat = mat(0xd4b08c, { roughness: 0.75 })
   const deskY = 0.72, deskW = 1.4, deskD = 0.6, deskT = 0.04
 
-  // Surface
   const surface = box(deskW, deskT, deskD, woodMat)
   surface.position.y = deskY
+  addEdgeOutline(surface)
   desk.add(surface)
 
-  // 4 legs
-  const legMat = mat(0xc49a6c, { roughness: 0.8 })
+  // Legs — slightly thicker for realism
+  const legMat = mat(0xb8936e, { roughness: 0.8 })
   for (const [x, z] of [[-0.65, -0.25], [0.65, -0.25], [-0.65, 0.25], [0.65, 0.25]]) {
-    const leg = cyl(0.02, 0.02, deskY, legMat)
+    const leg = cyl(0.025, 0.025, deskY, legMat)
     leg.position.set(x, deskY / 2, z)
     desk.add(leg)
   }
@@ -171,20 +245,20 @@ function createDesk(): THREE.Group {
   const lampBase = cyl(0.04, 0.05, 0.02, mat(0x444444, { metalness: 0.6 }))
   lampBase.position.set(0.55, deskY + deskT / 2 + 0.01, -0.15)
   desk.add(lampBase)
-
   const lampPole = cyl(0.01, 0.01, 0.35, mat(0x444444, { metalness: 0.6 }))
   lampPole.position.set(0.55, deskY + deskT / 2 + 0.19, -0.15)
   desk.add(lampPole)
-
   const lampShade = new THREE.Mesh(
     new THREE.ConeGeometry(0.08, 0.1, 16, 1, true),
     mat(0xfff0d0, { emissive: 0xfff0d0, emissiveIntensity: 0.6, side: THREE.DoubleSide })
   )
   lampShade.position.set(0.55, deskY + deskT / 2 + 0.38, -0.15)
   lampShade.rotation.x = Math.PI
+  lampShade.castShadow = true
   desk.add(lampShade)
 
-  desk.position.set(0, 0, -HALF_D + 0.35)
+  // Position: against back wall, shifted left
+  desk.position.set(-0.3, 0, -HALF_D + 0.35)
   return desk
 }
 
@@ -193,24 +267,23 @@ function createChair(): THREE.Group {
   const legMat = mat(0x444444, { metalness: 0.4, roughness: 0.5 })
   const seatY = 0.42, seatW = 0.42, seatD = 0.4
 
-  // Seat cushion
   const seat = box(seatW, 0.06, seatD, mat(0xffcad4, { roughness: 0.9 }))
   seat.position.y = seatY
+  addEdgeOutline(seat)
   chair.add(seat)
 
-  // Back
   const back = box(seatW, 0.4, 0.04, mat(0xffcad4, { roughness: 0.9 }))
   back.position.set(0, seatY + 0.23, -seatD / 2 + 0.02)
   chair.add(back)
 
-  // 4 legs
   for (const [x, z] of [[-0.17, -0.16], [0.17, -0.16], [-0.17, 0.16], [0.17, 0.16]]) {
     const leg = cyl(0.015, 0.015, seatY, legMat)
     leg.position.set(x, seatY / 2, z)
     chair.add(leg)
   }
 
-  chair.position.set(0, 0, -HALF_D + 0.95)
+  // Tucked under desk (negative Z, near back wall)
+  chair.position.set(-0.3, 0, -HALF_D + 0.7)
   return chair
 }
 
@@ -218,34 +291,94 @@ function createBed(): THREE.Group {
   const bed = new THREE.Group()
   const bedW = 1.2, bedH = 0.35, bedD = 2.0
 
-  // Frame
-  const frame = box(bedW, bedH, bedD, mat(0xd4b08c, { roughness: 0.75 }))
+  // Frame — slightly warmer wood
+  const frame = box(bedW, bedH, bedD, mat(0xd9b892, { roughness: 0.75 }))
   frame.position.set(0, bedH / 2, 0)
+  addEdgeOutline(frame)
   bed.add(frame)
 
-  // Mattress
   const mattress = box(bedW - 0.06, 0.12, bedD - 0.06, mat(0xf0d0e8, { roughness: 0.9 }))
   mattress.position.set(0, bedH + 0.06, 0)
   bed.add(mattress)
 
-  // Pillow
   const pillow = box(0.5, 0.1, 0.3, mat(0xfff0f5, { roughness: 0.95 }))
   pillow.position.set(0, bedH + 0.17, -bedD / 2 + 0.25)
   bed.add(pillow)
 
-  // Headboard
-  const headboard = box(bedW, 0.6, 0.06, mat(0xc49a6c, { roughness: 0.7 }))
+  // Second pillow for coziness
+  const pillow2 = box(0.35, 0.08, 0.25, mat(0xfce4ec, { roughness: 0.95 }))
+  pillow2.position.set(0.2, bedH + 0.14, -bedD / 2 + 0.25)
+  pillow2.rotation.y = 0.15
+  bed.add(pillow2)
+
+  const headboard = box(bedW, 0.6, 0.06, mat(0xb8895e, { roughness: 0.7 }))
   headboard.position.set(0, bedH + 0.3, -bedD / 2)
+  addEdgeOutline(headboard)
   bed.add(headboard)
 
-  // Blanket (slightly draped — just a thinner, different-colored box)
   const blanket = box(bedW - 0.1, 0.05, bedD * 0.6, mat(0xe8c0d8, { roughness: 0.95 }))
   blanket.position.set(0, bedH + 0.14, 0.25)
   bed.add(blanket)
 
-  bed.position.set(HALF_W - 0.7, 0, 0)
+  // Stuffed animal on bed
+  const plushBody = new THREE.Mesh(
+    new THREE.SphereGeometry(0.1, 12, 10),
+    mat(0xffd4b8, { roughness: 0.95 })
+  )
+  plushBody.position.set(-0.2, bedH + 0.22, 0.1)
+  plushBody.castShadow = true
+  bed.add(plushBody)
+  const plushHead = new THREE.Mesh(
+    new THREE.SphereGeometry(0.07, 10, 8),
+    mat(0xffd4b8, { roughness: 0.95 })
+  )
+  plushHead.position.set(-0.2, bedH + 0.34, 0.1)
+  plushHead.castShadow = true
+  bed.add(plushHead)
+
+  // Bed against right wall, headboard toward back-right
+  // Rotated so length runs along Z axis against right wall
+  bed.position.set(HALF_W - 0.65, 0, 0.2)
   bed.rotation.y = -Math.PI / 2
   return bed
+}
+
+function createSideTable(): THREE.Group {
+  const table = new THREE.Group()
+  const woodMat = mat(0xc8a070, { roughness: 0.75 })
+  const tW = 0.35, tD = 0.3, tH = 0.45, tT = 0.03
+
+  // Top
+  const top = box(tW, tT, tD, woodMat)
+  top.position.y = tH
+  addEdgeOutline(top)
+  table.add(top)
+
+  // Legs
+  for (const [x, z] of [[-0.14, -0.12], [0.14, -0.12], [-0.14, 0.12], [0.14, 0.12]]) {
+    const leg = cyl(0.015, 0.015, tH, woodMat)
+    leg.position.set(x, tH / 2, z)
+    table.add(leg)
+  }
+
+  // Small alarm clock
+  const clockBody = box(0.06, 0.06, 0.03, mat(0xf8c0d0, { roughness: 0.6 }))
+  clockBody.position.set(0, tH + tT / 2 + 0.03, 0)
+  table.add(clockBody)
+
+  // Small lamp on side table
+  const miniLampBase = cyl(0.025, 0.03, 0.015, mat(0xe0c0a0, { roughness: 0.6 }))
+  miniLampBase.position.set(0.08, tH + tT / 2 + 0.008, -0.05)
+  table.add(miniLampBase)
+  const miniLampShade = cyl(0.04, 0.03, 0.06, mat(0xfff0e0, {
+    emissive: 0xfff0e0, emissiveIntensity: 0.3, side: THREE.DoubleSide
+  }))
+  miniLampShade.position.set(0.08, tH + tT / 2 + 0.05, -0.05)
+  table.add(miniLampShade)
+
+  // Position next to bed (right wall area, forward of bed)
+  table.position.set(HALF_W - 0.35, 0, 1.4)
+  return table
 }
 
 function createBookshelf(): THREE.Group {
@@ -253,14 +386,12 @@ function createBookshelf(): THREE.Group {
   const shelfMat = mat(0xc49a6c, { roughness: 0.7 })
   const sw = 0.8, sd = 0.3, sh = 2.2, thick = 0.03
 
-  // Side panels
   for (const x of [-sw / 2, sw / 2]) {
     const side = box(thick, sh, sd, shelfMat)
     side.position.set(x, sh / 2, 0)
     shelf.add(side)
   }
 
-  // Shelves (5 horizontal)
   const shelfYs = [0.02, 0.5, 1.0, 1.5, 2.0]
   for (const y of shelfYs) {
     const s = box(sw, thick, sd, shelfMat)
@@ -268,12 +399,11 @@ function createBookshelf(): THREE.Group {
     shelf.add(s)
   }
 
-  // Back panel
   const backPanel = box(sw, sh, 0.02, shelfMat)
   backPanel.position.set(0, sh / 2, -sd / 2 + 0.01)
   shelf.add(backPanel)
 
-  // Fill with books
+  // Books
   const bookColors = [0xffb3c6, 0xb8d4e3, 0xd4c5f9, 0xffd6a5, 0xc1e1c1, 0xf4c2c2, 0xb5ead7, 0xffdac1]
   for (let row = 0; row < 4; row++) {
     const baseY = shelfYs[row] + thick / 2
@@ -286,6 +416,7 @@ function createBookshelf(): THREE.Group {
       const b = box(bw, bh, bd, mat(bookColor, { roughness: 0.85 }))
       b.position.set(x + bw / 2, baseY + bh / 2, 0.02)
       b.rotation.z = (Math.random() - 0.5) * 0.05
+      b.castShadow = false
       shelf.add(b)
       x += bw + 0.005
     }
@@ -302,6 +433,7 @@ function createBookshelf(): THREE.Group {
     )
     const angle = (i / 5) * Math.PI * 2
     leaf.position.set(Math.cos(angle) * 0.04, sh + 0.12, Math.sin(angle) * 0.04)
+    leaf.castShadow = true
     shelf.add(leaf)
   }
 
@@ -309,14 +441,29 @@ function createBookshelf(): THREE.Group {
   return shelf
 }
 
-function createRug(): THREE.Mesh {
-  const rug = new THREE.Mesh(
-    new THREE.CircleGeometry(0.7, 32),
+function createRug(): THREE.Group {
+  const group = new THREE.Group()
+  // Outer rug ring — darker edge
+  const outer = new THREE.Mesh(
+    new THREE.CircleGeometry(0.75, 32),
+    mat(0xeab8c8, { roughness: 0.95 })
+  )
+  outer.rotation.x = -Math.PI / 2
+  outer.position.set(0, 0.004, 0)
+  group.add(outer)
+
+  // Inner rug — lighter center
+  const inner = new THREE.Mesh(
+    new THREE.CircleGeometry(0.55, 32),
     mat(0xffd0e0, { roughness: 0.95 })
   )
-  rug.rotation.x = -Math.PI / 2
-  rug.position.set(0, 0.005, 0.3)
-  return rug
+  inner.rotation.x = -Math.PI / 2
+  inner.position.set(0, 0.005, 0)
+  group.add(inner)
+
+  // Center at origin (character's spot)
+  group.position.set(0, 0, 0)
+  return group
 }
 
 function createFairyLights(): THREE.Group {
@@ -332,14 +479,6 @@ function createFairyLights(): THREE.Group {
     )
     bulb.position.set(x, y, -HALF_D + 0.15)
     group.add(bulb)
-
-    // Wire between bulbs
-    if (i > 0) {
-      const prev = group.children[group.children.length - 2] as THREE.Mesh
-      const wire = box(0.005, 0.005, 0.005, mat(0x333333))
-      wire.position.lerpVectors(prev.position, bulb.position, 0.5)
-      // Skip wire for simplicity, the bulbs are enough
-    }
   }
   return group
 }
@@ -351,12 +490,10 @@ function createCornerPlant(): THREE.Group {
   pot.position.y = 0.1
   plant.add(pot)
 
-  // Soil
   const soil = cyl(0.09, 0.09, 0.02, mat(0x4a3728, { roughness: 1 }))
   soil.position.y = 0.21
   plant.add(soil)
 
-  // Leaves (cones + spheres)
   for (let i = 0; i < 7; i++) {
     const angle = (i / 7) * Math.PI * 2
     const r = 0.06 + Math.random() * 0.04
@@ -368,10 +505,12 @@ function createCornerPlant(): THREE.Group {
     leaf.position.set(Math.cos(angle) * r, 0.22 + h / 2, Math.sin(angle) * r)
     leaf.rotation.x = (Math.random() - 0.5) * 0.3
     leaf.rotation.z = (Math.random() - 0.5) * 0.3
+    leaf.castShadow = true
     plant.add(leaf)
   }
 
-  plant.position.set(HALF_W - 0.3, 0, HALF_D - 0.3)
+  // Move to back-left corner (away from character)
+  plant.position.set(-HALF_W + 0.3, 0, -HALF_D + 0.3)
   return plant
 }
 
@@ -391,16 +530,51 @@ function createPictureFrames(): THREE.Group {
 
     const frameGroup = new THREE.Group()
     const frame = box(0.28, 0.22, 0.02, frameMat)
+    frame.castShadow = false
     const art = box(0.22, 0.16, 0.015, artMat)
+    art.castShadow = false
     art.position.z = 0.005
     frameGroup.add(frame, art)
 
     frameGroup.position.set(x, y, z)
-    if (wall === 'left') {
-      frameGroup.rotation.y = Math.PI / 2
-    }
+    if (wall === 'left') frameGroup.rotation.y = Math.PI / 2
     group.add(frameGroup)
   }
+
+  return group
+}
+
+function createPoster(): THREE.Group {
+  const group = new THREE.Group()
+
+  // Large poster on right wall (above bed area)
+  const posterW = 0.5, posterH = 0.7
+  // Gradient-like poster using two overlapping planes
+  const posterBg = new THREE.Mesh(
+    new THREE.PlaneGeometry(posterW, posterH),
+    mat(0xe8d0f0, { roughness: 0.9 })
+  )
+  posterBg.position.set(HALF_W - 0.04, 2.0, -0.4)
+  posterBg.rotation.y = -Math.PI / 2
+  group.add(posterBg)
+
+  // Inner accent
+  const posterInner = new THREE.Mesh(
+    new THREE.PlaneGeometry(posterW - 0.08, posterH - 0.08),
+    mat(0xd0b8e0, { roughness: 0.9 })
+  )
+  posterInner.position.set(HALF_W - 0.038, 2.0, -0.4)
+  posterInner.rotation.y = -Math.PI / 2
+  group.add(posterInner)
+
+  // Star/shape decoration on poster
+  const star = new THREE.Mesh(
+    new THREE.CircleGeometry(0.06, 5),
+    mat(0xffd0e8, { roughness: 0.9 })
+  )
+  star.position.set(HALF_W - 0.035, 2.05, -0.4)
+  star.rotation.y = -Math.PI / 2
+  group.add(star)
 
   return group
 }
@@ -408,17 +582,28 @@ function createPictureFrames(): THREE.Group {
 function createRoomLights(): THREE.Light[] {
   const lights: THREE.Light[] = []
 
-  // Window light
+  // Window light — casts shadows
   const windowLight = new THREE.DirectionalLight(0xffe4b0, 1.5)
   windowLight.name = 'room-window-light'
   windowLight.position.set(0, 2.5, -HALF_D - 1)
   windowLight.target.position.set(0, 0.5, 0)
+  windowLight.castShadow = true
+  windowLight.shadow.mapSize.set(1024, 1024)
+  windowLight.shadow.camera.near = 0.1
+  windowLight.shadow.camera.far = 8
+  windowLight.shadow.camera.left = -3
+  windowLight.shadow.camera.right = 3
+  windowLight.shadow.camera.top = 4
+  windowLight.shadow.camera.bottom = -1
+  windowLight.shadow.bias = -0.002
   lights.push(windowLight)
 
   // Desk lamp light
   const deskLampLight = new THREE.PointLight(0xfff0d0, 0.8, 3)
   deskLampLight.name = 'room-desk-lamp'
-  deskLampLight.position.set(0.55, 1.15, -HALF_D + 0.35)
+  deskLampLight.position.set(0.25, 1.15, -HALF_D + 0.35)
+  deskLampLight.castShadow = true
+  deskLampLight.shadow.mapSize.set(512, 512)
   lights.push(deskLampLight)
 
   // Fairy lights glow
@@ -437,8 +622,40 @@ function createRoomLights(): THREE.Light[] {
   hemi.name = 'room-hemi'
   lights.push(hemi)
 
+  // Warm bounce from floor
+  const floorBounce = new THREE.PointLight(0xffd0b0, 0.3, 4)
+  floorBounce.name = 'room-floor-bounce'
+  floorBounce.position.set(0, 0.1, 0)
+  lights.push(floorBounce)
+
+  // Backlight behind character
+  const charBacklight = new THREE.SpotLight(0xfff0e0, 0.5, 5, Math.PI / 4, 0.5)
+  charBacklight.name = 'room-char-backlight'
+  charBacklight.position.set(0, 2.5, -1.5)
+  charBacklight.target.position.set(0, 1.0, 0.5)
+  charBacklight.castShadow = false
+  lights.push(charBacklight)
+
   return lights
 }
+
+// === Walkable bounds (export for animation system) ===
+
+export function getWalkableBounds(): { minX: number; maxX: number; minZ: number; maxZ: number } {
+  return {
+    minX: -0.8,
+    maxX: 0.6,
+    minZ: -0.6,
+    maxZ: 1.2,
+  }
+}
+
+export function isPositionSafe(x: number, z: number): boolean {
+  const bounds = getWalkableBounds()
+  return x >= bounds.minX && x <= bounds.maxX && z >= bounds.minZ && z <= bounds.maxZ
+}
+
+// === Init & mode switching ===
 
 export function initRoomScene(): void {
   roomGroup = new THREE.Group()
@@ -446,19 +663,22 @@ export function initRoomScene(): void {
   roomGroup.visible = false
 
   roomGroup.add(createFloor())
+  roomGroup.add(createCeiling())
+  roomGroup.add(createBaseboards())
   roomGroup.add(createWalls())
   roomGroup.add(createDesk())
   roomGroup.add(createChair())
   roomGroup.add(createBed())
+  roomGroup.add(createSideTable())
   roomGroup.add(createBookshelf())
   roomGroup.add(createRug())
   roomGroup.add(createFairyLights())
   roomGroup.add(createCornerPlant())
   roomGroup.add(createPictureFrames())
+  roomGroup.add(createPoster())
 
   scene.add(roomGroup)
 
-  // Create lights but don't add yet
   roomLights = createRoomLights()
 }
 
@@ -494,14 +714,23 @@ export function enableRoomMode(): void {
     if ((light as any).target) scene.add((light as any).target)
   }
 
-  // Set background
+  // Enable shadows
+  renderer.shadowMap.enabled = true
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+
+  // Background & fog
   scene.background = new THREE.Color(0x1a1520)
   renderer.setClearColor(0x1a1520, 1)
   renderer.toneMappingExposure = 0.95
+  scene.fog = new THREE.Fog(0x1a1520, 4, 8)
 
-  // Camera
-  camera.position.set(2, 2.2, 3.5)
-  controls.target.set(0, 0.8, 0)
+  // Camera — cozy diorama angle
+  camera.position.set(1.8, 2.0, 3.0)
+  controls.target.set(0, 0.9, -0.3)
+  controls.minDistance = 2.0
+  controls.maxDistance = 6.0
+  controls.minPolarAngle = 0.3
+  controls.maxPolarAngle = 1.4
   controls.update()
 
   setRoomTheme(currentTheme)
@@ -513,13 +742,11 @@ export function disableRoomMode(): void {
 
   roomGroup.visible = false
 
-  // Remove room lights
   for (const light of roomLights) {
     scene.remove(light)
     if ((light as any).target) scene.remove((light as any).target)
   }
 
-  // Restore outdoor lights
   for (const saved of savedOutdoorState) {
     scene.traverse((obj) => {
       if (obj.name === saved.name) {
@@ -529,7 +756,6 @@ export function disableRoomMode(): void {
     })
   }
 
-  // Restore platform circles
   scene.traverse((obj) => {
     if ((obj as any)._roomHidden) {
       obj.visible = true
@@ -537,12 +763,19 @@ export function disableRoomMode(): void {
     }
   })
 
-  // Restore background
+  // Remove fog
+  scene.fog = null
+
   scene.background = new THREE.Color(0xf8e8f0)
   renderer.setClearColor(0xf8e8f0, 1)
   renderer.toneMappingExposure = 1.06
 
-  // Restore camera
+  // Restore camera constraints
+  controls.minDistance = 1.5
+  controls.maxDistance = 8.0
+  controls.minPolarAngle = 0
+  controls.maxPolarAngle = Math.PI
+
   camera.position.set(0, 1.2, 3.0)
   controls.target.set(0, 0.9, 0)
   controls.update()
@@ -565,12 +798,16 @@ export function setRoomTheme(theme: 'cozy' | 'study' | 'night'): void {
       if (light.name === 'room-fairy-light') (light as THREE.PointLight).intensity = 0.3
       if (light.name === 'room-ambient') (light as THREE.AmbientLight).intensity = 0.4
       if (light.name === 'room-hemi') (light as THREE.HemisphereLight).intensity = 0.3
+      if (light.name === 'room-floor-bounce') (light as THREE.PointLight).intensity = 0.3
+      if (light.name === 'room-char-backlight') (light as THREE.SpotLight).intensity = 0.5
     } else if (theme === 'study') {
       if (light.name === 'room-window-light') (light as THREE.DirectionalLight).intensity = 0.6
       if (light.name === 'room-desk-lamp') (light as THREE.PointLight).intensity = 1.5
       if (light.name === 'room-fairy-light') (light as THREE.PointLight).intensity = 0.15
       if (light.name === 'room-ambient') (light as THREE.AmbientLight).intensity = 0.2
       if (light.name === 'room-hemi') (light as THREE.HemisphereLight).intensity = 0.15
+      if (light.name === 'room-floor-bounce') (light as THREE.PointLight).intensity = 0.15
+      if (light.name === 'room-char-backlight') (light as THREE.SpotLight).intensity = 0.3
     } else if (theme === 'night') {
       if (light.name === 'room-window-light') {
         (light as THREE.DirectionalLight).intensity = 0.15
@@ -580,13 +817,15 @@ export function setRoomTheme(theme: 'cozy' | 'study' | 'night'): void {
       if (light.name === 'room-fairy-light') (light as THREE.PointLight).intensity = 0.6
       if (light.name === 'room-ambient') (light as THREE.AmbientLight).intensity = 0.15
       if (light.name === 'room-hemi') (light as THREE.HemisphereLight).intensity = 0.1
+      if (light.name === 'room-floor-bounce') (light as THREE.PointLight).intensity = 0.1
+      if (light.name === 'room-char-backlight') (light as THREE.SpotLight).intensity = 0.2
     }
   }
 
   if (windowGlow) {
     const glowMat = windowGlow.material as THREE.MeshBasicMaterial
     if (theme === 'night') {
-      glowMat.color.set(0x2244660)
+      glowMat.color.set(0x224466)
       glowMat.opacity = 0.4
     } else {
       glowMat.color.set(0xffe4b0)
