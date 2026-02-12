@@ -12,6 +12,7 @@ export const idleConfig: IdleConfig = {
 }
 
 // Categorized idle animations for more lifelike behavior
+// Booth animations (booth_*) are higher quality companion-style animations
 const IDLE_CATEGORIES = {
   // Relaxed micro-movements (most common — subtle, natural)
   relaxed: [
@@ -34,10 +35,9 @@ const IDLE_CATEGORIES = {
   // Happy / cheerful (character enjoys being here)
   happy: [
     '40_Happy Idle',
-    '150_Sitting Laughing',
+    '116_Happy Hand Gesture',
     '72_Sitting Clap',
     '74_Sitting Thumbs Up',
-    '116_Happy Hand Gesture',
   ],
   // Self-care / comfort (makes character feel alive)
   selfCare: [
@@ -45,24 +45,37 @@ const IDLE_CATEGORIES = {
     '163_Yawn',
     '96_Arm Stretching',
     '131_Neck Stretching',
-    '59_Petting Animal',
   ],
-  // Cozy / restful (avoid sitting — legs spread badly on this VRM)
+  // Booth: cute companion animations (LovePoint_Cute)
+  cute: [
+    'booth_lp_LP_1', 'booth_lp_LP_2', 'booth_lp_LP_3', 'booth_lp_LP_4',
+    'booth_lp_LP_5', 'booth_lp_LP_6', 'booth_lp_LP_7', 'booth_lp_LP_8',
+    'booth_lp_LP_9', 'booth_lp_LP_10', 'booth_lp_LP_11', 'booth_lp_LP_12',
+    'booth_lp_LP_13', 'booth_lp_LP_14', 'booth_lp_LP_15', 'booth_lp_LP_16',
+  ],
+  // Booth: emote/pose animations (PURUPURU)
+  emote: [
+    'booth_pp_Sample_1', 'booth_pp_Sample_2', 'booth_pp_Sample_3',
+    'booth_pp_Sample_4', 'booth_pp_Sample_5', 'booth_pp_Sample_6',
+    'booth_pp_Sample_7', 'booth_pp_Sample_8', 'booth_pp_Sample_9',
+    'booth_pp_Sample_10',
+  ],
+  // Booth: cute sitting/sleeping (EmoteCollector)
   cozy: [
-    '151_Sleeping Idle',
-    '142_Sad Idle',
-    '163_Yawn',
-    '50_Kneeling Idle',
+    'booth_ec_Sit_Girly', 'booth_ec_Sit_KneeBend',
+    'booth_ec_AFK', 'booth_ec_Sleep_Side',
   ],
 }
 
-// Weighted category selection — relaxed is most common
+// Weighted category selection — Booth cute animations featured prominently
 const CATEGORY_WEIGHTS: Array<[keyof typeof IDLE_CATEGORIES, number]> = [
-  ['relaxed', 0.35],
-  ['active', 0.25],
-  ['happy', 0.18],
-  ['selfCare', 0.15],
-  ['cozy', 0.07],
+  ['cute', 0.28],      // Booth LovePoint — best for companion feel
+  ['relaxed', 0.22],
+  ['active', 0.15],
+  ['emote', 0.12],     // Booth PURUPURU
+  ['happy', 0.10],
+  ['selfCare', 0.08],
+  ['cozy', 0.05],      // Booth EmoteCollector sitting/sleeping
 ]
 
 function pickIdleAction(): string {
