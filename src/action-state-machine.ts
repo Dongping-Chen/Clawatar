@@ -47,13 +47,12 @@ const IDLE_CATEGORIES = {
     '131_Neck Stretching',
     '59_Petting Animal',
   ],
-  // Cozy / sitting (for longer idle periods)
+  // Cozy / restful (avoid sitting — legs spread badly on this VRM)
   cozy: [
-    '149_Sitting Idle',
-    '148_Sitting Drinking',
     '151_Sleeping Idle',
-    '147_Sit To Type',
     '142_Sad Idle',
+    '163_Yawn',
+    '50_Kneeling Idle',
   ],
 }
 
