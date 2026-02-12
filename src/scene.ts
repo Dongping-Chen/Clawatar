@@ -153,17 +153,17 @@ export function enhanceLightingForEmbed() {
   // 3. HERO KEY LIGHT — strong frontal spot, the "holy light" effect
   //    Bright, warm, slightly above — like studio beauty dish
   lightingRig.key.position.set(0.3, 3.5, 3.0)  // High, front-center
-  lightingRig.key.intensity = 1.8  // STRONG — this is the spotlight
-  lightingRig.key.color.set(0xfff4f0)  // Near-white with tiny warm tint
+  lightingRig.key.intensity = 2.1  // VERY STRONG — character must pop
+  lightingRig.key.color.set(0xfff6f2)  // Near-white with tiny warm tint
 
   // 4. Face fill — bright point light right in front of face
-  const faceFill = new THREE.PointLight(0xfff8f2, 0.8, 5)
+  const faceFill = new THREE.PointLight(0xfff8f4, 1.0, 5)
   faceFill.name = 'face-fill'
   faceFill.position.set(0, 1.5, 2.0)
   scene.add(faceFill)
 
   // 5. Body fill — illuminates torso and legs more evenly
-  const bodyFill = new THREE.PointLight(0xfff0f0, 0.6, 6)
+  const bodyFill = new THREE.PointLight(0xfff2f0, 0.75, 6)
   bodyFill.name = 'body-fill'
   bodyFill.position.set(0, 0.8, 2.5)
   scene.add(bodyFill)
@@ -198,6 +198,6 @@ export function enhanceLightingForEmbed() {
   lightingRig.bounce.color.set(0xffdce8)
   lightingRig.bounce.position.set(0, 0.1, 1.5)
 
-  // Slightly boost tone mapping exposure — character should be BRIGHT
-  renderer.toneMappingExposure = 1.1
+  // Boost tone mapping exposure — character should GLOW
+  renderer.toneMappingExposure = 1.15
 }
