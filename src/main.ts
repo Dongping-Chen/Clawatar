@@ -13,7 +13,7 @@ import { initTouchReactions } from './touch-reactions'
 import { initEmotionBar } from './emotion-bar'
 import { initBackgrounds, updateBackgroundEffects } from './backgrounds'
 import { initCameraPresets, updateCameraPresets } from './camera-presets'
-import { initRoomScene, enableRoomMode } from './room-scene'
+import { initRoomScene, enableRoomMode, isRoomMode, getWalkableBounds } from './room-scene'
 import type { AppState } from './types'
 
 export const state: AppState = {
@@ -177,6 +177,38 @@ function animate() {
   updateBlink(elapsed)
   updateLipSync()
   if (state.vrm) state.vrm.update(delta)
+
+  // ROOM MODE: Clamp VRM root position to walkable bounds
+  // Some animations have root motion that moves the character into walls/furniture
+  if (state.vrm && isRoomMode()) {
+    const vrmScene = state.vrm.scene
+    const bounds = getWalkableBounds()
+    // Clamp the VRM scene root (character position)
+    vrmScene.position.x = Math.max(bounds.minX, Math.min(bounds.maxX, vrmScene.position.x))
+    vrmScene.position.z = Math.max(bounds.minZ, Math.min(bounds.maxZ, vrmScene.position.z))
+    // Also clamp Y — character shouldn't fly above floor or sink below
+    vrmScene.position.y = Math.max(0, Math.min(0.5, vrmScene.position.y))
+
+    // Also check the hips bone which some animations translate directly
+    const hipsBone = state.vrm.humanoid?.getNormalizedBoneNode('hips')
+    if (hipsBone) {
+      const hipsWorld = new THREE.Vector3()
+      hipsBone.getWorldPosition(hipsWorld)
+      // If hips moved outside bounds, push the whole VRM root back
+      if (hipsWorld.x < bounds.minX || hipsWorld.x > bounds.maxX ||
+          hipsWorld.z < bounds.minZ || hipsWorld.z > bounds.maxZ) {
+        // Calculate how far the hips are from the root
+        const rootPos = vrmScene.position
+        const hipsOffset = new THREE.Vector3(hipsWorld.x - rootPos.x, 0, hipsWorld.z - rootPos.z)
+        // Clamp hips world position
+        const clampedX = Math.max(bounds.minX, Math.min(bounds.maxX, hipsWorld.x))
+        const clampedZ = Math.max(bounds.minZ, Math.min(bounds.maxZ, hipsWorld.z))
+        // Adjust root so hips end up at clamped position
+        rootPos.x += (clampedX - hipsWorld.x)
+        rootPos.z += (clampedZ - hipsWorld.z)
+      }
+    }
+  }
 
   updateStateMachine(elapsed)
   updateBackgroundEffects(elapsed, delta)
