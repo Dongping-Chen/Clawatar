@@ -138,21 +138,53 @@ export function enableBloom() {
 }
 
 export function enhanceLightingForEmbed() {
-  // Boost rim light for more "stage presence"
-  lightingRig.rim.intensity = 0.65
-  lightingRig.rim.color.set(0xffb8e0) // Warmer pink rim
+  // === PORTRAIT / BEAUTY LIGHTING for anime VRM ===
 
-  // Add a subtle back light for hair highlight
-  const backLight = new THREE.SpotLight(0xffd0e8, 0.4, 10, Math.PI / 6, 0.5)
+  // 1. Softer ambient — raise base illumination so shadows aren't harsh
+  lightingRig.ambient.intensity = 1.1
+  lightingRig.ambient.color.set(0xfff5f8)  // Warm white-pink
+
+  // 2. Hemisphere: warm sky (peach) + cool ground (lavender) for soft fill
+  lightingRig.skyFill.intensity = 0.7
+  lightingRig.skyFill.color.set(0xffe4d6)  // Warm peach sky
+  lightingRig.skyFill.groundColor.set(0xe8d8f0)  // Soft lavender ground
+
+  // 3. Key light: "butterfly" position — above-front center, slightly warm
+  //    Moved more frontal for softer face illumination
+  lightingRig.key.position.set(0.5, 3.2, 2.5)  // More centered, higher
+  lightingRig.key.intensity = 1.1  // Slightly reduced (ambient does more)
+  lightingRig.key.color.set(0xffeef2)  // Very subtle warm tint
+
+  // 4. Face fill light — soft point light at face height, frontal
+  //    This is the key to soft anime-style face rendering
+  const faceFill = new THREE.PointLight(0xfff0f4, 0.5, 4)
+  faceFill.name = 'face-fill'
+  faceFill.position.set(0, 1.5, 1.8)  // Right in front of face
+  scene.add(faceFill)
+
+  // 5. Under-chin fill — eliminates harsh shadows under nose/chin
+  const chinFill = new THREE.PointLight(0xffe8f0, 0.25, 3)
+  chinFill.name = 'chin-fill'
+  chinFill.position.set(0, 0.9, 1.5)  // Below face, front
+  scene.add(chinFill)
+
+  // 6. Rim light — subtle pink edge separation
+  lightingRig.rim.intensity = 0.55
+  lightingRig.rim.color.set(0xffc0e0)
+
+  // 7. Hair back light — creates highlight on hair edges
+  const backLight = new THREE.SpotLight(0xffd0e8, 0.35, 10, Math.PI / 6, 0.6)
+  backLight.name = 'hair-backlight'
   backLight.position.set(0, 3, -2)
-  backLight.target.position.set(0, 1.2, 0)
+  backLight.target.position.set(0, 1.4, 0)
   scene.add(backLight)
   scene.add(backLight.target)
 
-  // Keep key light close to original
-  lightingRig.key.intensity = 1.25
+  // 8. Bounce from below — warm reflection from "floor"
+  lightingRig.bounce.intensity = 0.3
+  lightingRig.bounce.color.set(0xffdce8)
+  lightingRig.bounce.position.set(0, 0.3, 1.2)  // Lower, more frontal
 
-  // Slightly warmer bounce
-  lightingRig.bounce.intensity = 0.32
-  lightingRig.bounce.color.set(0xffe0ec)
+  // 9. Slightly lower tone mapping exposure to prevent wash-out
+  renderer.toneMappingExposure = 0.98
 }
