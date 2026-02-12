@@ -505,6 +505,17 @@ wss.on('connection', (ws) => {
       return
     }
 
+    // Handle meeting_speech — transcribed audio from virtual meeting bridge
+    if (parsed?.type === 'meeting_speech' && parsed.text) {
+      console.log(`[meeting] Heard: "${parsed.text}"`)
+      // Prefix with meeting context so AI knows this is from a meeting
+      const meetingPrompt = `[Meeting Audio] A participant said: "${parsed.text}"\n\nIf this seems directed at you or relevant, respond naturally. If it's just background conversation, you can acknowledge briefly or stay quiet.`
+      handleUserSpeech(meetingPrompt, ws).catch(e => {
+        console.error('Meeting speech handling error:', e.message)
+      })
+      return
+    }
+
     // Handle user_speech — check for slash commands first, then send to OpenClaw agent
     if (parsed?.type === 'user_speech' && parsed.text) {
       const slashResponse = handleSlashCommand(parsed.text)
