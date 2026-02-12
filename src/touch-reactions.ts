@@ -35,9 +35,34 @@ const SILLY_REACTIONS: TouchReaction[] = [
   { expression: 'relaxed', intensity: 0.78, actionId: '163_Yawn', emoji: '😜' },
 ]
 
+// Tap detection: only trigger if pointer barely moved and was quick
+const TAP_MAX_DISTANCE = 10   // px — max movement to count as a tap
+const TAP_MAX_DURATION = 300  // ms — max hold time to count as a tap
+
+let downX = 0
+let downY = 0
+let downTime = 0
+
 export function initTouchReactions(canvas: HTMLCanvasElement) {
   canvas.addEventListener('pointerdown', (event) => {
+    downX = event.clientX
+    downY = event.clientY
+    downTime = performance.now()
+  })
+
+  canvas.addEventListener('pointerup', (event) => {
     if (!state.vrm) return
+
+    // Check if this was a quick tap (not a swipe/drag)
+    const dx = event.clientX - downX
+    const dy = event.clientY - downY
+    const distance = Math.sqrt(dx * dx + dy * dy)
+    const duration = performance.now() - downTime
+
+    if (distance > TAP_MAX_DISTANCE || duration > TAP_MAX_DURATION) {
+      // This was a swipe/drag, not a tap — ignore
+      return
+    }
 
     const rect = canvas.getBoundingClientRect()
     pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1

@@ -25,7 +25,7 @@ export function initScene(canvas: HTMLCanvasElement) {
 
   scene.background = new THREE.Color(0xf8e8f0)
 
-  camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 100)
+  camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.01, 100)
   camera.position.set(0, 1.2, 3.0)
 
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
@@ -200,4 +200,70 @@ export function enhanceLightingForEmbed() {
 
   // Boost tone mapping exposure — character should GLOW
   renderer.toneMappingExposure = 1.15
+}
+
+/**
+ * Enhanced lighting for web mode (solid background).
+ * Same light structure as embed but ~40% lower intensity
+ * to avoid overexposure against the solid pink background.
+ */
+export function enhanceLightingForWeb() {
+  // 1. Ambient — slightly brighter to compensate for fewer fills
+  lightingRig.ambient.intensity = 0.75
+  lightingRig.ambient.color.set(0xfff8fa)
+
+  // 2. Hemisphere
+  lightingRig.skyFill.intensity = 0.5
+  lightingRig.skyFill.color.set(0xffebd6)
+  lightingRig.skyFill.groundColor.set(0xd8c8e8)
+
+  // 3. Key light — strong but not blow-out
+  lightingRig.key.position.set(0.3, 3.5, 3.0)
+  lightingRig.key.intensity = 1.4
+  lightingRig.key.color.set(0xfff6f2)
+
+  // 4. Face fill
+  const faceFill = new THREE.PointLight(0xfff8f4, 0.6, 5)
+  faceFill.name = 'face-fill'
+  faceFill.position.set(0, 1.5, 2.0)
+  scene.add(faceFill)
+
+  // 5. Body fill
+  const bodyFill = new THREE.PointLight(0xfff2f0, 0.45, 6)
+  bodyFill.name = 'body-fill'
+  bodyFill.position.set(0, 0.8, 2.5)
+  scene.add(bodyFill)
+
+  // 6. Chin fill
+  const chinFill = new THREE.PointLight(0xffe8f0, 0.2, 3)
+  chinFill.name = 'chin-fill'
+  chinFill.position.set(0, 0.9, 1.5)
+  scene.add(chinFill)
+
+  // 7. Rim — pink edge glow
+  lightingRig.rim.intensity = 0.5
+  lightingRig.rim.color.set(0xffb0d8)
+  lightingRig.rim.position.set(-2.5, 2.0, -1.5)
+
+  // 8. Second rim
+  const rim2 = new THREE.DirectionalLight(0xd8c0ff, 0.35)
+  rim2.name = 'rim2'
+  rim2.position.set(2.5, 2.0, -1.5)
+  scene.add(rim2)
+
+  // 9. Hair top light
+  const topSpot = new THREE.SpotLight(0xfff0e8, 0.4, 8, Math.PI / 5, 0.7)
+  topSpot.name = 'top-spot'
+  topSpot.position.set(0, 4, 0.5)
+  topSpot.target.position.set(0, 1.4, 0)
+  scene.add(topSpot)
+  scene.add(topSpot.target)
+
+  // 10. Bounce
+  lightingRig.bounce.intensity = 0.25
+  lightingRig.bounce.color.set(0xffdce8)
+  lightingRig.bounce.position.set(0, 0.1, 1.5)
+
+  // Moderate exposure — don't blow out against solid bg
+  renderer.toneMappingExposure = 1.06
 }

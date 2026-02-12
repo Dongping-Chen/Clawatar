@@ -344,6 +344,96 @@ async function handleCameraFrame(base64Image: string, senderWs: WebSocket) {
   }
 }
 
+// --- Slash command handler (Telegram-style with inline buttons) ---
+function handleSlashCommand(text: string): any | null {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('/')) return null
+
+  const parts = trimmed.split(/\s+/)
+  const cmd = parts[0].toLowerCase()
+  const arg = parts.slice(1).join(' ')
+
+  switch (cmd) {
+    case '/help':
+    case '/commands':
+      return {
+        type: 'speak',
+        text: 'Available commands:',
+        buttons: [
+          [{ text: 'Status', callback_data: '/status' }, { text: 'Model', callback_data: '/model' }],
+          [{ text: 'Think', callback_data: '/think' }, { text: 'TTS', callback_data: '/tts' }],
+          [{ text: 'Usage', callback_data: '/usage' }, { text: 'Sessions', callback_data: '/sessions' }],
+          [{ text: 'New Session', callback_data: '/new' }, { text: 'Reset', callback_data: '/reset' }],
+        ],
+      }
+
+    case '/model':
+      if (!arg) {
+        return {
+          type: 'speak',
+          text: 'Choose a model provider:',
+          buttons: [
+            [{ text: 'OpenAI', callback_data: '/model openai' }],
+            [{ text: 'Anthropic', callback_data: '/model anthropic' }],
+          ],
+        }
+      }
+      if (arg === 'openai') {
+        return {
+          type: 'speak',
+          text: 'Choose an OpenAI model:',
+          buttons: [
+            [{ text: 'GPT-4o', callback_data: '/model set openai/gpt-4o' }],
+            [{ text: 'GPT-5.2', callback_data: '/model set openai/gpt-5.2' }],
+            [{ text: 'GPT-5.2 Codex', callback_data: '/model set openai/gpt-5.2-codex' }],
+            [{ text: 'Back', callback_data: '/model' }],
+          ],
+        }
+      }
+      if (arg === 'anthropic') {
+        return {
+          type: 'speak',
+          text: 'Choose an Anthropic model:',
+          buttons: [
+            [{ text: 'Claude Sonnet 4', callback_data: '/model set anthropic/claude-sonnet-4' }],
+            [{ text: 'Claude Opus 4.6', callback_data: '/model set anthropic/claude-opus-4-6' }],
+            [{ text: 'Back', callback_data: '/model' }],
+          ],
+        }
+      }
+      // "set" subcommand — forward to OpenClaw agent
+      if (arg.startsWith('set ')) {
+        return null  // Let agent handle the actual model switch
+      }
+      return null
+
+    case '/think':
+      return {
+        type: 'speak',
+        text: 'Set thinking level:',
+        buttons: [
+          [{ text: 'Off', callback_data: '/think off' }, { text: 'Low', callback_data: '/think low' }],
+          [{ text: 'Medium', callback_data: '/think medium' }, { text: 'High', callback_data: '/think high' }],
+        ],
+      }
+
+    case '/status':
+      return null  // Forward to OpenClaw agent for real status
+
+    case '/tts':
+      return {
+        type: 'speak',
+        text: 'Text-to-Speech settings:',
+        buttons: [
+          [{ text: 'Enable TTS', callback_data: '/tts on' }, { text: 'Disable TTS', callback_data: '/tts off' }],
+        ],
+      }
+
+    default:
+      return null  // Unknown slash command → forward to agent
+  }
+}
+
 // --- WebSocket server ---
 const wss = new WebSocketServer({ port: WS_PORT })
 const clients = new Set<WebSocket>()
@@ -415,8 +505,20 @@ wss.on('connection', (ws) => {
       return
     }
 
-    // Handle user_speech — send to OpenClaw agent, get response, TTS, animate
+    // Handle user_speech — check for slash commands first, then send to OpenClaw agent
     if (parsed?.type === 'user_speech' && parsed.text) {
+      const slashResponse = handleSlashCommand(parsed.text)
+      if (slashResponse) {
+        // Slash command handled locally — broadcast response with buttons
+        const msg = JSON.stringify(slashResponse)
+        for (const client of clients) {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(msg)
+          }
+        }
+        return
+      }
+
       handleUserSpeech(parsed.text, ws).catch(e => {
         console.error('User speech handling error:', e.message)
         ws.send(JSON.stringify({ type: 'tts_error', message: e.message }))

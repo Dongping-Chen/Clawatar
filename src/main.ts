@@ -1,3 +1,4 @@
+import * as THREE from 'three'
 import { initScene, scene, camera, renderer, controls, clock, composer } from './scene'
 import { initLookAt, updateLookAt } from './look-at'
 import { updateBlink } from './blink'
@@ -86,20 +87,26 @@ function init() {
   initScene(canvas)
   initLookAt(canvas)
 
-  if (isEmbed) {
-    // Embed mode: hide ALL UI, transparent bg, bloom, enhanced lighting
-    hideAllUI()
-    import('./scene').then(m => {
-      m.setTransparentBackground(true)
-      // Note: bloom disabled for transparent bg (creates edge artifacts)
-      // m.enableBloom()
+  // Enhanced lighting for both modes — embed gets full "holy light", web gets a toned-down version
+  import('./scene').then(m => {
+    if (isEmbed) {
+      // Embed mode: full intensity (transparent bg, iOS app provides background)
       m.enhanceLightingForEmbed()
-      // Adjust camera for mobile portrait: zoom out to show full body
+      hideAllUI()
+      m.setTransparentBackground(true)
       m.camera.position.set(0, 1.1, 3.6)
       m.controls.target.set(0, 0.82, 0)
       m.controls.update()
-    })
-  } else {
+      m.controls.enableRotate = false
+      m.controls.enablePan = false
+      m.controls.enableZoom = false
+    } else {
+      // Web mode: same light setup but reduced intensity (solid bg adds brightness)
+      m.enhanceLightingForWeb()
+    }
+  })
+
+  if (!isEmbed) {
     initUI()
   }
 
@@ -168,6 +175,24 @@ function animate() {
   updateStateMachine(elapsed)
   updateBackgroundEffects(elapsed, delta)
   updateCameraPresets(performance.now() / 1000)
+
+  // GLOBAL safety: prevent head from clipping through camera in ANY mode
+  if (state.vrm) {
+    const headBone = state.vrm.humanoid?.getNormalizedBoneNode('head')
+    if (headBone) {
+      const headPos = new THREE.Vector3()
+      headBone.getWorldPosition(headPos)
+      const camToHead = headPos.clone().sub(camera.position)
+      const dist = camToHead.length()
+      const minSafeDist = 0.8  // Never let head get closer than 0.8 units to camera
+      if (dist < minSafeDist) {
+        // Push camera backwards along the camera-to-head vector
+        const pushDir = camToHead.normalize().multiplyScalar(-(minSafeDist - dist))
+        camera.position.add(pushDir)
+      }
+    }
+  }
+
   updateLookAt()
 
   controls.update()

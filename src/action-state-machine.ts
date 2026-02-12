@@ -11,6 +11,9 @@ export const idleConfig: IdleConfig = {
   idleMaxHoldSeconds: 18,    // Hold at most 18s (was 30)
 }
 
+// noidle mode: follower instances skip idle animation picks, only respond to WS commands
+const isFollower = new URLSearchParams(window.location.search).has('noidle')
+
 // DM Motionpack animations organized by emotion (from vrma_catalog.json)
 // These are high-quality Booth companion animations
 const IDLE_CATEGORIES = {
@@ -95,18 +98,24 @@ const IDLE_CATEGORIES = {
     'dm_36',  // confident_dance
     'dm_37', 'dm_38', 'dm_39',
   ],
+  // Dance — Reze's signature dances (HIGHEST PRIORITY for dance picks)
+  dance: [
+    'reze_dance_soft',  // Reze dance — soft/gentle version
+    'reze_dance_hard',  // Reze dance — hard/energetic version
+  ],
 }
 
 // Default weights (overridden by time-of-day)
 const CATEGORY_WEIGHTS: Array<[keyof typeof IDLE_CATEGORIES, number]> = [
-  ['neutral', 0.25],
-  ['happy', 0.22],
-  ['shy', 0.12],
-  ['loving', 0.10],
-  ['excited', 0.08],
-  ['proud', 0.08],
-  ['stretching', 0.08],
-  ['tired', 0.07],
+  ['neutral', 0.22],
+  ['happy', 0.20],
+  ['dance', 0.12],   // Reze's signature dance — high priority!
+  ['shy', 0.10],
+  ['loving', 0.09],
+  ['excited', 0.07],
+  ['proud', 0.07],
+  ['stretching', 0.07],
+  ['tired', 0.06],
 ]
 
 // Time-of-day weight adjustments
@@ -114,50 +123,54 @@ function getTimeAdjustedWeights(): Array<[keyof typeof IDLE_CATEGORIES, number]>
   const hour = new Date().getHours()
 
   if (hour >= 23 || hour < 6) {
-    // Late night — sleepy, tired, cozy
+    // Late night — sleepy, tired, cozy (but still some dance~)
     return [
-      ['tired', 0.40],
-      ['neutral', 0.20],
-      ['shy', 0.15],
+      ['tired', 0.35],
+      ['neutral', 0.18],
+      ['shy', 0.13],
       ['loving', 0.10],
-      ['happy', 0.10],
+      ['happy', 0.08],
+      ['dance', 0.08],
       ['stretching', 0.05],
-      ['excited', 0.0],
-      ['proud', 0.0],
+      ['excited', 0.02],
+      ['proud', 0.01],
     ]
   } else if (hour >= 6 && hour < 10) {
     // Morning — stretching, waking up, gradually cheerful
     return [
-      ['stretching', 0.30],
-      ['tired', 0.15],
-      ['neutral', 0.20],
+      ['stretching', 0.25],
+      ['neutral', 0.18],
       ['happy', 0.15],
-      ['shy', 0.10],
+      ['tired', 0.12],
+      ['dance', 0.10],
+      ['shy', 0.08],
       ['excited', 0.05],
-      ['loving', 0.03],
-      ['proud', 0.02],
+      ['loving', 0.04],
+      ['proud', 0.03],
     ]
   } else if (hour >= 10 && hour < 18) {
-    // Daytime — active, happy, confident
+    // Daytime — active, happy, dancing!
     return [
-      ['happy', 0.25],
-      ['neutral', 0.20],
-      ['excited', 0.15],
-      ['proud', 0.12],
-      ['loving', 0.10],
-      ['shy', 0.08],
+      ['happy', 0.22],
+      ['neutral', 0.18],
+      ['dance', 0.15],    // Daytime = most dancing
+      ['excited', 0.12],
+      ['proud', 0.10],
+      ['loving', 0.08],
+      ['shy', 0.06],
       ['stretching', 0.05],
-      ['tired', 0.05],
+      ['tired', 0.04],
     ]
   } else {
     // Evening (18-23) — winding down, sweet, relaxed
     return [
-      ['neutral', 0.22],
-      ['happy', 0.20],
-      ['loving', 0.15],
-      ['shy', 0.15],
-      ['tired', 0.10],
-      ['stretching', 0.08],
+      ['neutral', 0.20],
+      ['happy', 0.18],
+      ['loving', 0.13],
+      ['shy', 0.12],
+      ['dance', 0.12],
+      ['tired', 0.08],
+      ['stretching', 0.07],
       ['excited', 0.05],
       ['proud', 0.05],
     ]
@@ -204,6 +217,7 @@ function getExpressionForCategory(category: keyof typeof IDLE_CATEGORIES): { nam
     case 'shy':      return { name: 'happy', weight: 0.15 }   // Tiny shy smile
     case 'tired':    return { name: 'relaxed', weight: 0.4 }  // Sleepy eyes
     case 'proud':    return { name: 'happy', weight: 0.2 }
+    case 'dance':    return { name: 'happy', weight: 0.4 }    // Big smile while dancing!
     case 'neutral':  return null  // No expression override — natural
     case 'stretching': return null
     default: return null
@@ -213,6 +227,9 @@ function getExpressionForCategory(category: keyof typeof IDLE_CATEGORIES): { nam
 let currentIdleCategory: keyof typeof IDLE_CATEGORIES = 'neutral'
 
 export function updateStateMachine(elapsed: number) {
+  // Follower mode: don't pick idle animations, only respond to WS play_action
+  if (isFollower) return
+
   if (state.characterState !== 'idle') return
   if (elapsed < holdUntil) return
   if (elapsed - lastIdleAttempt < idleConfig.idleActionInterval) return
@@ -225,11 +242,15 @@ export function updateStateMachine(elapsed: number) {
   currentIdleCategory = category
   setState('action')
 
+  // Broadcast to WS so follower instances play the same animation
   // Set subtle expression matching the animation's emotion
   const expr = getExpressionForCategory(category)
   if (expr) {
     setExpression(expr.name, expr.weight)
   }
+
+  // Broadcast animation + expression to followers via WS
+  broadcastIdleAction(actionId, expr)
 
   loadAndPlayAction(actionId, false, () => {
     // ALWAYS reset expressions when idle animation finishes
@@ -245,9 +266,25 @@ export function updateStateMachine(elapsed: number) {
   })
 }
 
+/** Broadcast idle action + expression to WS server for follower sync */
+function broadcastIdleAction(actionId: string, expression?: { name: string; weight: number } | null) {
+  try {
+    const ws = (window as any).__clawatar_ws as WebSocket | undefined
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const msg: any = { type: 'play_action', action_id: actionId }
+      if (expression) {
+        msg.expression = expression.name
+        msg.expression_weight = expression.weight
+      }
+      ws.send(JSON.stringify(msg))
+    }
+  } catch { /* ignore */ }
+}
+
 export async function requestAction(actionId: string) {
   setState('action')
   await loadAndPlayAction(actionId, false, () => {
+    resetExpressions()  // Clear expression overrides when action ends
     playBaseIdle().then(() => setState('idle'))
   })
 }

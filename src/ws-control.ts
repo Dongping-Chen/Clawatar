@@ -34,7 +34,15 @@ async function handleCommand(cmd: any) {
   try {
     switch (cmd.type) {
       case 'play_action':
-        if (cmd.action_id) await requestAction(cmd.action_id)
+        if (cmd.action_id) {
+          // Apply expression from master if provided (follower sync)
+          if (cmd.expression) {
+            setExpression(cmd.expression, cmd.expression_weight ?? 0.5)
+          } else {
+            resetExpressions()
+          }
+          await requestAction(cmd.action_id)
+        }
         break
       case 'set_expression':
         if (cmd.name) setExpression(cmd.name, cmd.weight ?? 1.0)
@@ -90,6 +98,9 @@ async function handleCommand(cmd: any) {
       case 'set_camera_preset':
         import('./camera-presets').then(m => m.setCameraPreset(cmd.preset, cmd.duration))
         break
+      case 'adjust_camera_preset':
+        import('./camera-presets').then(m => m.adjustPresetOffset(cmd.preset, cmd.distance ?? 1.0, cmd.height ?? 0))
+        break
     }
     // Send ack for commands, but NOT for status messages (prevents broadcast loops)
     if (cmd.type !== 'speak_audio' && cmd.type !== 'tts_error' && !cmd.status) {
@@ -124,6 +135,8 @@ export function connectWS(port = 8765) {
   if (ws) ws.close()
 
   ws = new WebSocket(`ws://localhost:${port}`)
+  // Expose WS for idle animation sync (action-state-machine.ts)
+  ;(window as any).__clawatar_ws = ws
 
   ws.onopen = () => {
     updateStatus(true)
