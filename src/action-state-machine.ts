@@ -46,36 +46,30 @@ const IDLE_CATEGORIES = {
     '96_Arm Stretching',
     '131_Neck Stretching',
   ],
-  // Booth: cute companion animations (LovePoint_Cute)
-  cute: [
-    'booth_lp_LP_1', 'booth_lp_LP_2', 'booth_lp_LP_3', 'booth_lp_LP_4',
-    'booth_lp_LP_5', 'booth_lp_LP_6', 'booth_lp_LP_7', 'booth_lp_LP_8',
-    'booth_lp_LP_9', 'booth_lp_LP_10', 'booth_lp_LP_11', 'booth_lp_LP_12',
-    'booth_lp_LP_13', 'booth_lp_LP_14', 'booth_lp_LP_15', 'booth_lp_LP_16',
+  // DM Motionpack — real companion idle animations from Booth (140 total)
+  // Split into groups to try a sampling of them
+  dm_cute: [
+    'dm_0', 'dm_1', 'dm_2', 'dm_3', 'dm_4', 'dm_5', 'dm_6', 'dm_7',
+    'dm_8', 'dm_9', 'dm_10', 'dm_11', 'dm_12', 'dm_13', 'dm_14', 'dm_15',
+    'dm_16', 'dm_17', 'dm_18', 'dm_19', 'dm_20', 'dm_21', 'dm_22', 'dm_23',
+    'dm_24', 'dm_25', 'dm_26', 'dm_27', 'dm_28', 'dm_29', 'dm_30',
   ],
-  // Booth: emote/pose animations (PURUPURU)
-  emote: [
-    'booth_pp_Sample_1', 'booth_pp_Sample_2', 'booth_pp_Sample_3',
-    'booth_pp_Sample_4', 'booth_pp_Sample_5', 'booth_pp_Sample_6',
-    'booth_pp_Sample_7', 'booth_pp_Sample_8', 'booth_pp_Sample_9',
-    'booth_pp_Sample_10',
-  ],
-  // Booth: cute sitting/sleeping (EmoteCollector)
-  cozy: [
-    'booth_ec_Sit_Girly', 'booth_ec_Sit_KneeBend',
-    'booth_ec_AFK', 'booth_ec_Sleep_Side',
+  dm_variety: [
+    'dm_31', 'dm_32', 'dm_33', 'dm_34', 'dm_35', 'dm_36', 'dm_37', 'dm_38',
+    'dm_39', 'dm_40', 'dm_50', 'dm_60', 'dm_70', 'dm_80', 'dm_90', 'dm_100',
+    'dm_110', 'dm_120', 'dm_130', 'dm_139',
   ],
 }
 
-// Weighted category selection — Booth cute animations featured prominently
+// Default weights (overridden by time-of-day)
 const CATEGORY_WEIGHTS: Array<[keyof typeof IDLE_CATEGORIES, number]> = [
-  ['cute', 0.28],      // Booth LovePoint — best for companion feel
-  ['relaxed', 0.22],
-  ['active', 0.15],
-  ['emote', 0.12],     // Booth PURUPURU
-  ['happy', 0.10],
+  ['dm_cute', 0.30],     // DM Motionpack — best companion animations
+  ['dm_variety', 0.15],  // DM Motionpack variety
+  ['relaxed', 0.18],
+  ['active', 0.12],
+  ['happy', 0.12],
   ['selfCare', 0.08],
-  ['cozy', 0.05],      // Booth EmoteCollector sitting/sleeping
+  ['relaxed', 0.05],     // extra relaxed weight
 ]
 
 // Time-of-day weight adjustments
@@ -83,48 +77,44 @@ function getTimeAdjustedWeights(): Array<[keyof typeof IDLE_CATEGORIES, number]>
   const hour = new Date().getHours()
 
   if (hour >= 23 || hour < 6) {
-    // Late night / early morning — sleepy, cozy, calm
+    // Late night / early morning — sleepy, calm
     return [
-      ['cozy', 0.35],       // More sleeping/sitting
+      ['dm_cute', 0.30],
       ['relaxed', 0.25],
-      ['cute', 0.20],
-      ['selfCare', 0.10],   // Yawning, stretching
-      ['emote', 0.05],
-      ['active', 0.03],
-      ['happy', 0.02],
+      ['selfCare', 0.20],   // Yawning, stretching
+      ['dm_variety', 0.15],
+      ['happy', 0.05],
+      ['active', 0.05],
     ]
   } else if (hour >= 6 && hour < 10) {
-    // Morning — waking up, stretching, getting energized
+    // Morning — waking up, stretching
     return [
-      ['selfCare', 0.30],   // Stretching, yawning
-      ['relaxed', 0.25],
-      ['cute', 0.20],
-      ['active', 0.12],
+      ['selfCare', 0.25],
+      ['dm_cute', 0.25],
+      ['relaxed', 0.20],
+      ['dm_variety', 0.12],
+      ['active', 0.10],
       ['happy', 0.08],
-      ['emote', 0.03],
-      ['cozy', 0.02],
     ]
   } else if (hour >= 10 && hour < 18) {
-    // Daytime — active, cheerful, engaged
+    // Daytime — active, cheerful
     return [
-      ['cute', 0.28],
-      ['active', 0.22],
+      ['dm_cute', 0.28],
+      ['active', 0.20],
       ['happy', 0.18],
-      ['relaxed', 0.14],
-      ['emote', 0.10],
-      ['selfCare', 0.05],
-      ['cozy', 0.03],
+      ['dm_variety', 0.14],
+      ['relaxed', 0.12],
+      ['selfCare', 0.08],
     ]
   } else {
-    // Evening (18-23) — winding down, relaxed, comfortable
+    // Evening (18-23) — winding down, comfortable
     return [
-      ['cute', 0.25],
-      ['relaxed', 0.25],
-      ['emote', 0.15],
+      ['dm_cute', 0.30],
+      ['relaxed', 0.22],
+      ['dm_variety', 0.18],
       ['happy', 0.12],
       ['selfCare', 0.10],
-      ['cozy', 0.08],
-      ['active', 0.05],
+      ['active', 0.08],
     ]
   }
 }
