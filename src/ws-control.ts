@@ -7,7 +7,8 @@ import { triggerSpeak } from './lip-sync'
 import { setLookAtTarget } from './look-at'
 import { detectEmotion } from './emotion-detect'
 import { notifyUserActivity } from './reactive-idle'
-import { requestAction, requestSpeak, requestSpeakAudio, requestReset, getState } from './action-state-machine'
+import { requestAction, requestSpeak, requestSpeakAudio, requestSpeakAudioStream, requestFinishSpeaking, requestReset, getState } from './action-state-machine'
+import { streamingPlayer } from './streaming-audio'
 import { addMessage } from './chat-ui'
 import { initVoiceInput, toggleListening, setMicButton } from './voice-input'
 import { initChatUI } from './chat-ui'
@@ -97,6 +98,40 @@ async function handleCommand(cmd: any) {
         }
         break
       }
+      /* ── streaming audio (voice/chat mode) ── */
+      case 'audio_start': {
+        // Begin streaming playback — sets up MSE + analyser + animation
+        await streamingPlayer.startStream()
+        let sActionId = cmd.action_id
+        let sExpr = cmd.expression
+        let sExprW = cmd.expression_weight
+        if (!sExpr && cmd.text) {
+          const emo = detectEmotion(cmd.text)
+          if (emo.primary !== 'neutral') {
+            sExpr = emo.expression
+            sExprW = emo.expressionWeight
+            if (!sActionId && emo.animation) sActionId = emo.animation
+          }
+        }
+        await requestSpeakAudioStream(sActionId, sExpr, sExprW)
+        break
+      }
+      case 'audio_chunk': {
+        if (cmd.audio) streamingPlayer.feedChunk(cmd.audio)
+        break
+      }
+      case 'audio_end': {
+        if (cmd.text) addMessage('avatar', cmd.text)
+        await streamingPlayer.endStream()
+        requestFinishSpeaking()
+        break
+      }
+      case 'streaming_mode': {
+        // Server confirmed streaming mode change — nothing to do client-side
+        console.log(`[ws] Streaming mode: ${cmd.enabled}`)
+        break
+      }
+
       case 'user_typing':
         notifyUserActivity('typing')
         break

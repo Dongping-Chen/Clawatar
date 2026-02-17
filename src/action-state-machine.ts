@@ -374,6 +374,28 @@ function finishSpeaking() {
   playBaseIdle().then(() => setState('idle'))
 }
 
+/**
+ * Begin a streaming speak — sets expression & animation but does NOT
+ * await audio (the streaming-audio module drives lip sync instead).
+ * Call requestFinishSpeaking() when the stream ends.
+ */
+export async function requestSpeakAudioStream(
+  actionId?: string,
+  expression?: string,
+  expressionWeight?: number,
+): Promise<void> {
+  setState('speaking')
+  if (expression) setExpression(expression, expressionWeight ?? 0.8)
+  if (actionId) {
+    loadAndPlayAction(actionId, false, () => {}).catch(console.error)
+  }
+}
+
+/** End a streaming speak — resets lip sync / expression and returns to idle. */
+export function requestFinishSpeaking(): void {
+  finishSpeaking()
+}
+
 export function requestReset() {
   resetLipSync()
   resetExpressions()

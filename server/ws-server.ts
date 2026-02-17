@@ -444,6 +444,200 @@ async function twoPhaseStreamingPipeline(
 }
 
 /**
+ * ─────────────────────────────────────────────────────────────────────
+ * Streaming Audio Pipeline (voice / chat mode ONLY)
+ *
+ * Optimisations vs the batch pipeline:
+ *  1. Tokens fed DIRECTLY to ElevenLabs WS (no sentence splitting)
+ *  2. ElevenLabs WS pre-warmed in parallel with Gateway fetch
+ *  3. Audio chunks forwarded to browser clients immediately (no file I/O)
+ *  4. No gap detection / 1 500 ms wait
+ *
+ * The browser client plays chunks via MediaSource Extensions for
+ * near-zero buffering delay and real-time lip-sync.
+ * ─────────────────────────────────────────────────────────────────────
+ */
+async function streamingAudioPipeline(
+  messages: Array<{ role: string; content: string }>,
+  sessionKey: string,
+  broadcastToClients: (msg: any) => void,
+): Promise<{ text: string; firstChunkMs: number }> {
+  messages = [{ role: 'system', content: VOICE_SYSTEM_PROMPT }, ...messages]
+  const startTime = Date.now()
+  const sid = randomUUID()
+  let fullText = ''
+  let firstChunkMs = 0
+  let chunkIndex = 0
+  let audioStartSent = false
+
+  /* ── 1. Pre-warm ElevenLabs WS ── */
+  const elReady = new Promise<WebSocket>((resolve, reject) => {
+    const url = `wss://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream-input?model_id=${MODEL_ID}&output_format=mp3_44100_128`
+    const ws = new WebSocket(url)
+    ws.on('open', () => {
+      ws.send(JSON.stringify({
+        text: ' ',
+        voice_settings: { stability: 0.45, similarity_boost: 0.75 },
+        // Lower chunk_length_schedule for faster first-audio in voice chat
+        generation_config: { chunk_length_schedule: [50, 80, 120, 160] },
+        xi_api_key: API_KEY,
+      }))
+      resolve(ws)
+    })
+    ws.on('error', reject)
+    setTimeout(() => reject(new Error('ElevenLabs WS connect timeout')), 8000)
+  })
+
+  /* ── 2. Start Gateway SSE in parallel ── */
+  const gwResp = fetch(`http://127.0.0.1:${GATEWAY_PORT}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+      'x-openclaw-agent-id': 'main',
+      'x-openclaw-session-key': sessionKey,
+    },
+    body: JSON.stringify({ model: 'openclaw', stream: true, messages }),
+  })
+
+  const [elWs, resp] = await Promise.all([elReady, gwResp])
+
+  if (!resp.ok) {
+    elWs.close()
+    throw new Error(`Gateway ${resp.status}: ${(await resp.text()).slice(0, 200)}`)
+  }
+
+  /* ── 3. Forward ElevenLabs audio → clients ── */
+  const elDone = new Promise<void>((resolve) => {
+    elWs.on('message', (raw: Buffer | string) => {
+      try {
+        const msg = JSON.parse(raw.toString())
+        if (msg.audio) {
+          // Send audio_start before first chunk
+          if (!audioStartSent) {
+            const { action_id, expression, expression_weight } = pickAction(fullText || '…')
+            broadcastToClients({
+              type: 'audio_start', session_id: sid,
+              action_id, expression, expression_weight,
+              text: fullText,
+            })
+            audioStartSent = true
+          }
+          if (chunkIndex === 0) {
+            firstChunkMs = Date.now() - startTime
+            console.log(`[stream-audio] First audio chunk at ${firstChunkMs}ms`)
+          }
+          broadcastToClients({
+            type: 'audio_chunk', audio: msg.audio,
+            index: chunkIndex++, session_id: sid,
+          })
+        }
+        if (msg.isFinal) elWs.close()
+      } catch {}
+    })
+    elWs.on('close', resolve)
+    elWs.on('error', () => resolve())
+    setTimeout(resolve, 60_000) // safety
+  })
+
+  /* ── 4. Read Gateway tokens → batch & feed ElevenLabs ── */
+  //
+  // Token batching + gap-triggered generation:
+  //  • Accumulate tokens in a small buffer
+  //  • Flush to ElevenLabs every BATCH_MS or when punctuation seen
+  //  • If no tokens arrive for GAP_TRIGGER_MS, send try_trigger_generation
+  //    so ElevenLabs renders whatever it has (critical for tool-call gaps)
+  //
+  const BATCH_MS = 80       // max time to buffer tokens before sending
+  const GAP_TRIGGER_MS = 400 // gap without tokens → force audio generation
+
+  let tokenBuf = ''
+  let gapTimer: ReturnType<typeof setTimeout> | null = null
+  let batchTimer: ReturnType<typeof setTimeout> | null = null
+  const PUNCT = /[。！？.!?\n～〜；;：…—，、]/
+
+  const sendToEL = (text: string, trigger: boolean) => {
+    if (!text || elWs.readyState !== WebSocket.OPEN) return
+    const msg: any = { text }
+    if (trigger) msg.try_trigger_generation = true
+    elWs.send(JSON.stringify(msg))
+  }
+
+  const flushBatch = (trigger: boolean) => {
+    if (batchTimer) { clearTimeout(batchTimer); batchTimer = null }
+    if (tokenBuf) {
+      sendToEL(tokenBuf, trigger)
+      tokenBuf = ''
+    }
+  }
+
+  const reader = resp.body!.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const lines = buf.split('\n'); buf = lines.pop() || ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ') || line === 'data: [DONE]') continue
+      try {
+        const token = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content
+        if (token) {
+          fullText += token
+          tokenBuf += token
+
+          // Reset gap timer every time a token arrives
+          if (gapTimer) clearTimeout(gapTimer)
+          gapTimer = setTimeout(() => {
+            flushBatch(true)
+            // Force ElevenLabs to generate audio from whatever it has buffered
+            if (elWs.readyState === WebSocket.OPEN) {
+              elWs.send(JSON.stringify({ text: '', flush: true }))
+              console.log(`[stream-audio] gap flush @${Date.now() - startTime}ms`)
+            }
+          }, GAP_TRIGGER_MS)
+
+          // Flush immediately on sentence-ending punctuation (with trigger + flush)
+          if (PUNCT.test(token)) {
+            flushBatch(true)
+            if (elWs.readyState === WebSocket.OPEN) {
+              elWs.send(JSON.stringify({ text: '', flush: true }))
+            }
+          } else if (!batchTimer) {
+            // Otherwise batch up to BATCH_MS
+            batchTimer = setTimeout(() => flushBatch(false), BATCH_MS)
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // Flush anything left
+  flushBatch(true)
+  if (gapTimer) clearTimeout(gapTimer)
+
+  // Signal end-of-text to ElevenLabs
+  if (elWs.readyState === WebSocket.OPEN) {
+    elWs.send(JSON.stringify({ text: '' }))
+  }
+
+  await elDone
+
+  // Abort if model returned a no-op
+  if (/^(NO_REPLY|HEARTBEAT_OK)\s*$/i.test(fullText.trim())) {
+    console.log('[stream-audio] Response is NO_REPLY — suppressing')
+    return { text: fullText, firstChunkMs }
+  }
+
+  broadcastToClients({ type: 'audio_end', session_id: sid, text: fullText })
+  const totalMs = Date.now() - startTime
+  console.log(`[stream-audio] Done in ${totalMs}ms (${chunkIndex} chunks, first: ${firstChunkMs}ms): "${fullText.slice(0, 80)}"`)
+  return { text: fullText, firstChunkMs }
+}
+
+/**
  * Voice-mode system prompt: instructs the model to always speak a brief
  * acknowledgment BEFORE calling any tool. This ensures the SSE stream
  * emits tokens immediately, eliminating silent gaps during tool execution.
@@ -619,6 +813,24 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
     }
   }
 
+  /* ── Streaming-audio mode ──────────────────────────────────────── */
+  if (isDeviceStreaming(senderWs)) {
+    try {
+      const { text: response, firstChunkMs } = await streamingAudioPipeline(
+        [{ role: 'user', content: text }],
+        'vrm-chat',
+        broadcast,
+      )
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+      console.log(`[stream-audio] handleUserSpeech done in ${elapsed}s (first chunk: ${firstChunkMs}ms)`)
+      return
+    } catch (e: any) {
+      console.error('[stream-audio] Pipeline error, falling back to batch:', e.message)
+      // fall through to batch pipeline
+    }
+  }
+
+  /* ── Batch pipeline (default) ──────────────────────────────────── */
   try {
     // Two-phase broadcast: ack first sentence immediately during tool calls,
     // then broadcast the main response when ready
@@ -637,19 +849,19 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
     )
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-    console.log(`[streaming] Response in ${elapsed}s (first audio: ${firstAudioMs}ms, ack: ${ackSent}): "${response.slice(0, 80)}..."`)
+    console.log(`[batch] Response in ${elapsed}s (first audio: ${firstAudioMs}ms, ack: ${ackSent}): "${response.slice(0, 80)}..."`)
 
     if (!response || response.includes('NO_REPLY') || response.includes('HEARTBEAT_OK')) {
-      console.log('[streaming] No actionable response')
+      console.log('[batch] No actionable response')
       return
     }
 
     // Broadcast the main response (full text + remaining audio)
     const { action_id, expression, expression_weight } = pickAction(response)
     broadcast({ type: 'speak_audio', audio_url: audioUrl, text: response, action_id, expression, expression_weight })
-    console.log(`[streaming] Broadcast: ${action_id}, ${expression}, device: ${audioDevice || 'all'}`)
+    console.log(`[batch] Broadcast: ${action_id}, ${expression}, device: ${audioDevice || 'all'}`)
   } catch (e: any) {
-    console.error('[streaming] Pipeline error:', e.message)
+    console.error('[batch] Pipeline error:', e.message)
     // Fallback: non-streaming
     try {
       const response = await askOpenClaw(text)
@@ -657,7 +869,7 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
       const audioUrl = await generateTTS(response)
       broadcast({ type: 'speak_audio', audio_url: audioUrl, text: response, action_id, expression, expression_weight })
     } catch (fallbackErr: any) {
-      console.error('[streaming] Fallback also failed:', fallbackErr.message)
+      console.error('[batch] Fallback also failed:', fallbackErr.message)
       broadcast({ type: 'speak', text: "Sorry, I'm having trouble right now.", action_id: '88_Thinking', expression: 'neutral', expression_weight: 0.5 })
     }
   }
@@ -668,19 +880,37 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
  * Uses x-openclaw-session-key to maintain a persistent meeting session with full context.
  */
 async function handleMeetingSpeech(prompt: string, senderWs: WebSocket) {
-  console.log(`[meeting] Streaming pipeline...`)
+  console.log(`[meeting] Pipeline...`)
   const startTime = Date.now()
 
+  const broadcastAll = (msg: any) => {
+    msg.audio_device = 'meeting'
+    const str = JSON.stringify(msg)
+    for (const c of clients) { if (c.readyState === WebSocket.OPEN) c.send(str) }
+  }
+
+  /* ── Streaming-audio path ── */
+  if (isDeviceStreaming(senderWs)) {
+    try {
+      const { text: response, firstChunkMs } = await streamingAudioPipeline(
+        [{ role: 'user', content: prompt }],
+        'meeting-avatar',
+        broadcastAll,
+      )
+      console.log(`[meeting-stream] Done ${((Date.now() - startTime) / 1000).toFixed(1)}s, first chunk ${firstChunkMs}ms`)
+      return
+    } catch (e: any) {
+      console.error('[meeting-stream] Error, falling back:', e.message)
+    }
+  }
+
+  /* ── Batch path (default) ── */
   try {
     const broadcastAck = (ackAudioUrl: string, ackText: string) => {
-      const ackMsg = JSON.stringify({
+      broadcastAll({
         type: 'speak_audio', audio_url: ackAudioUrl, text: ackText,
         action_id: '88_Thinking', expression: 'neutral', expression_weight: 0.5,
-        audio_device: 'meeting',
       })
-      for (const client of clients) {
-        if (client.readyState === WebSocket.OPEN) client.send(ackMsg)
-      }
     }
 
     const { text: response, audioUrl, firstChunkMs, ackSent } = await streamingPipeline(
@@ -690,24 +920,18 @@ async function handleMeetingSpeech(prompt: string, senderWs: WebSocket) {
     )
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-    console.log(`[meeting] Done in ${elapsed}s (TTS first chunk: ${firstChunkMs}ms, ack: ${ackSent}): "${response.slice(0, 100)}..."`)
+    console.log(`[meeting-batch] Done in ${elapsed}s (TTS first: ${firstChunkMs}ms, ack: ${ackSent}): "${response.slice(0, 100)}..."`)
 
     if (!response || response.length < 2 || response.includes('NO_REPLY') || response.includes('HEARTBEAT_OK')) {
-      console.log('[meeting] No actionable response')
+      console.log('[meeting-batch] No actionable response')
       return
     }
 
     const { action_id, expression, expression_weight } = pickAction(response)
-    const audioMsg = JSON.stringify({
-      type: 'speak_audio', audio_url: audioUrl, text: response,
-      action_id, expression, expression_weight, audio_device: 'meeting',
-    })
-    for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) client.send(audioMsg)
-    }
-    console.log(`[meeting] Broadcast: ${action_id}, ${expression}`)
+    broadcastAll({ type: 'speak_audio', audio_url: audioUrl, text: response, action_id, expression, expression_weight })
+    console.log(`[meeting-batch] Broadcast: ${action_id}, ${expression}`)
   } catch (e: any) {
-    console.error('[meeting] Streaming pipeline error:', e.message)
+    console.error('[meeting-batch] Pipeline error:', e.message)
   }
 }
 
@@ -717,6 +941,15 @@ interface DeviceInfo {
   deviceId: string
   deviceType: string
   name: string
+  streamingMode: boolean
+}
+
+/** Check whether the WS connection has streaming-audio mode enabled. */
+function isDeviceStreaming(target: WebSocket): boolean {
+  for (const [, dev] of devices) {
+    if (dev.ws === target && dev.streamingMode) return true
+  }
+  return (target as any).__streamingMode === true
 }
 const devices = new Map<string, DeviceInfo>()
 
@@ -1005,11 +1238,12 @@ wss.on('connection', (ws) => {
 
     // Handle device registration for multi-device sync
     if (parsed?.type === 'register_device') {
-      const info = {
+      const info: DeviceInfo = {
         ws,
         deviceId: parsed.deviceId || randomUUID(),
         deviceType: parsed.deviceType || 'unknown', // 'ios', 'macos', 'watchos', 'web'
-        name: parsed.name || 'Unknown Device'
+        name: parsed.name || 'Unknown Device',
+        streamingMode: false,
       }
       devices.set(info.deviceId, info)
       ws.send(JSON.stringify({ type: 'registered', deviceId: info.deviceId, connectedDevices: getDeviceList() }))
@@ -1084,6 +1318,22 @@ wss.on('connection', (ws) => {
       handleMeetingSpeech(meetingPrompt, ws).catch(e => {
         console.error('Meeting speech handling error:', e.message)
       })
+      return
+    }
+
+    // Toggle streaming-audio mode for this connection
+    if (parsed?.type === 'set_streaming_mode') {
+      const enabled = !!parsed.enabled
+      // Update device registry
+      const devId = findDeviceIdByWs(ws)
+      if (devId) {
+        const dev = devices.get(devId)
+        if (dev) dev.streamingMode = enabled
+      }
+      // Fallback flag for unregistered clients
+      ;(ws as any).__streamingMode = enabled
+      ws.send(JSON.stringify({ type: 'streaming_mode', enabled }))
+      console.log(`[streaming] Device ${devId || '?'} streaming mode → ${enabled}`)
       return
     }
 

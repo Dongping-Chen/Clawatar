@@ -17,6 +17,19 @@ function getAudioContext(): AudioContext {
 }
 
 /**
+ * Allow the streaming-audio module to drive lip sync by injecting
+ * its own AnalyserNode.  When playing=false the state is cleared.
+ */
+export function setStreamingAnalyser(playing: boolean, ext: AnalyserNode | null): void {
+  audioPlaying = playing
+  if (ext) {
+    analyser = ext
+  } else if (!playing) {
+    analyser = null
+  }
+}
+
+/**
  * Play audio from URL and drive lip sync from actual audio data.
  * Returns a promise that resolves when audio finishes.
  */
