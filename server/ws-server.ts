@@ -334,6 +334,116 @@ async function streamingTTS(sentences: AsyncIterable<string>): Promise<{ audioUr
 }
 
 /**
+ * Two-phase streaming pipeline for tool-call scenarios.
+ *
+ * When the sentence splitter emits the first sentence (e.g. "让我查一下～")
+ * and then the next sentence takes >GAP_THRESHOLD_MS (tool call gap), we:
+ * 1. Immediately TTS the first sentence and broadcast it (ack phase)
+ * 2. Collect the remaining sentences, TTS them, and broadcast (main phase)
+ *
+ * For simple chats (no gap), everything goes through as one broadcast.
+ */
+const GAP_THRESHOLD_MS = 1500
+
+async function twoPhaseStreamingPipeline(
+  messages: Array<{ role: string; content: string }>,
+  sessionKey: string = 'vrm-chat',
+  broadcastFn: (audioUrl: string, text: string, isAck: boolean) => void,
+): Promise<{ text: string; audioUrl: string; firstAudioMs: number; ackSent: boolean }> {
+  // Prepend voice-mode system prompt
+  messages = [{ role: 'system', content: VOICE_SYSTEM_PROMPT }, ...messages]
+  const startTime = Date.now()
+  let ackSent = false
+
+  // Collect sentences with timestamps
+  const sentenceQueue: Array<{ text: string; time: number }> = []
+  let allDone = false
+
+  // Start Gateway streaming
+  const tokenStream = streamFromGateway(messages, sessionKey)
+  const sentenceStream = sentenceSplitter(tokenStream)
+
+  // Consume sentences into a queue
+  ;(async () => {
+    for await (const sentence of sentenceStream) {
+      sentenceQueue.push({ text: sentence, time: Date.now() })
+    }
+    allDone = true
+  })()
+
+  // Wait for first sentence
+  while (sentenceQueue.length === 0 && !allDone) {
+    await new Promise(r => setTimeout(r, 50))
+  }
+
+  if (sentenceQueue.length === 0) {
+    throw new Error('No sentences from Gateway')
+  }
+
+  const firstSentence = sentenceQueue[0]
+  const firstSentenceMs = firstSentence.time - startTime
+  console.log(`[two-phase] First sentence at ${firstSentenceMs}ms: "${firstSentence.text.slice(0, 40)}"`)
+
+  // Wait up to GAP_THRESHOLD_MS for a second sentence
+  const gapStart = Date.now()
+  while (sentenceQueue.length <= 1 && !allDone && (Date.now() - gapStart) < GAP_THRESHOLD_MS) {
+    await new Promise(r => setTimeout(r, 50))
+  }
+
+  const hasGap = sentenceQueue.length <= 1 && !allDone
+  let fullText = ''
+  let finalAudioUrl = ''
+
+  if (hasGap) {
+    // TOOL CALL DETECTED: long gap after first sentence
+    // Phase 1: immediately TTS and broadcast the first sentence
+    console.log(`[two-phase] Gap detected (>${GAP_THRESHOLD_MS}ms) — broadcasting ack: "${firstSentence.text.slice(0, 40)}"`)
+    try {
+      const ackAudioUrl = await generateTTS(firstSentence.text)
+      broadcastFn(ackAudioUrl, firstSentence.text, true)
+      ackSent = true
+      console.log(`[two-phase] Ack broadcast at ${Date.now() - startTime}ms`)
+    } catch (e: any) {
+      console.error(`[two-phase] Ack TTS failed: ${e.message}`)
+    }
+
+    // Phase 2: wait for remaining sentences, TTS, and broadcast
+    while (!allDone) {
+      await new Promise(r => setTimeout(r, 100))
+    }
+
+    // Collect all text
+    fullText = sentenceQueue.map(s => s.text).join('')
+
+    // TTS the remaining sentences (skip first which was already ack'd)
+    const remainingSentences = sentenceQueue.slice(1).map(s => s.text).join('')
+    if (remainingSentences.trim()) {
+      finalAudioUrl = await generateTTS(remainingSentences)
+    } else {
+      // Only had the ack sentence
+      finalAudioUrl = await generateTTS(fullText)
+    }
+  } else {
+    // NO GAP: simple chat, one-shot TTS
+    while (!allDone) {
+      await new Promise(r => setTimeout(r, 100))
+    }
+    fullText = sentenceQueue.map(s => s.text).join('')
+    // Use streaming TTS for better performance
+    async function* sentenceTexts() {
+      for (const s of sentenceQueue) yield s.text
+    }
+    const result = await streamingTTS(sentenceTexts())
+    finalAudioUrl = result.audioUrl
+  }
+
+  const totalMs = Date.now() - startTime
+  console.log(`[two-phase] Complete in ${totalMs}ms, ack: ${ackSent}, text: "${fullText.slice(0, 80)}..."`)
+
+  return { text: fullText, audioUrl: finalAudioUrl, firstAudioMs: firstSentenceMs, ackSent }
+}
+
+/**
  * Voice-mode system prompt: instructs the model to always speak a brief
  * acknowledgment BEFORE calling any tool. This ensures the SSE stream
  * emits tokens immediately, eliminating silent gaps during tool execution.
@@ -500,42 +610,43 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
   const startTime = Date.now()
   const audioDevice = sourceDevice || undefined
 
+  // Broadcast helper
+  const broadcast = (msg: any) => {
+    if (audioDevice) msg.audio_device = audioDevice
+    const str = JSON.stringify(msg)
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) client.send(str)
+    }
+  }
+
   try {
-    // Ack callback: broadcasts a quick acknowledgment if Gateway is slow (tool calls)
-    const broadcastAck = (ackAudioUrl: string, ackText: string) => {
-      const ackMsg: any = {
-        type: 'speak_audio', audio_url: ackAudioUrl, text: ackText,
-        action_id: '88_Thinking', expression: 'neutral', expression_weight: 0.5,
-      }
-      if (audioDevice) ackMsg.audio_device = audioDevice
-      const ackMsgStr = JSON.stringify(ackMsg)
-      for (const client of clients) {
-        if (client.readyState === WebSocket.OPEN) client.send(ackMsgStr)
-      }
+    // Two-phase broadcast: ack first sentence immediately during tool calls,
+    // then broadcast the main response when ready
+    const broadcastFn = (audioUrl: string, text: string, isAck: boolean) => {
+      const { action_id, expression, expression_weight } = isAck
+        ? { action_id: '88_Thinking', expression: 'neutral', expression_weight: 0.5 }
+        : pickAction(text)
+      broadcast({ type: 'speak_audio', audio_url: audioUrl, text, action_id, expression, expression_weight })
+      console.log(`[two-phase] ${isAck ? 'ACK' : 'MAIN'} broadcast: ${action_id}, text: "${text.slice(0, 50)}"`)
     }
 
-    // Full streaming pipeline with instant ack
-    const { text: response, audioUrl, firstChunkMs, ackSent } = await streamingPipeline(
+    const { text: response, audioUrl, firstAudioMs, ackSent } = await twoPhaseStreamingPipeline(
       [{ role: 'user', content: text }],
       'vrm-chat',
-      { broadcastAck, inputText: text },
+      broadcastFn,
     )
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-    console.log(`[streaming] Response in ${elapsed}s (TTS first chunk: ${firstChunkMs}ms, ack: ${ackSent}): "${response.slice(0, 80)}..."`)
+    console.log(`[streaming] Response in ${elapsed}s (first audio: ${firstAudioMs}ms, ack: ${ackSent}): "${response.slice(0, 80)}..."`)
 
     if (!response || response.includes('NO_REPLY') || response.includes('HEARTBEAT_OK')) {
       console.log('[streaming] No actionable response')
       return
     }
 
+    // Broadcast the main response (full text + remaining audio)
     const { action_id, expression, expression_weight } = pickAction(response)
-    const audioMsg: any = { type: 'speak_audio', audio_url: audioUrl, text: response, action_id, expression, expression_weight }
-    if (audioDevice) audioMsg.audio_device = audioDevice
-    const audioMsgStr = JSON.stringify(audioMsg)
-    for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) client.send(audioMsgStr)
-    }
+    broadcast({ type: 'speak_audio', audio_url: audioUrl, text: response, action_id, expression, expression_weight })
     console.log(`[streaming] Broadcast: ${action_id}, ${expression}, device: ${audioDevice || 'all'}`)
   } catch (e: any) {
     console.error('[streaming] Pipeline error:', e.message)
@@ -544,17 +655,10 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
       const response = await askOpenClaw(text)
       const { action_id, expression, expression_weight } = pickAction(response)
       const audioUrl = await generateTTS(response)
-      const audioMsg: any = { type: 'speak_audio', audio_url: audioUrl, text: response, action_id, expression, expression_weight }
-      if (audioDevice) audioMsg.audio_device = audioDevice
-      for (const client of clients) {
-        if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(audioMsg))
-      }
+      broadcast({ type: 'speak_audio', audio_url: audioUrl, text: response, action_id, expression, expression_weight })
     } catch (fallbackErr: any) {
       console.error('[streaming] Fallback also failed:', fallbackErr.message)
-      const fallbackMsg = JSON.stringify({ type: 'speak', text: "Sorry, I'm having trouble right now.", action_id: '88_Thinking', expression: 'neutral', expression_weight: 0.5 })
-      for (const client of clients) {
-        if (client.readyState === WebSocket.OPEN) client.send(fallbackMsg)
-      }
+      broadcast({ type: 'speak', text: "Sorry, I'm having trouble right now.", action_id: '88_Thinking', expression: 'neutral', expression_weight: 0.5 })
     }
   }
 }
