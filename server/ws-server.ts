@@ -246,7 +246,10 @@ async function* streamFromGateway(
  */
 async function* sentenceSplitter(tokens: AsyncGenerator<string>): AsyncGenerator<string> {
   let buffer = ''
-  const enders = /[。！？.!?\n]/
+  // Include ～ ，、；：— … and other natural Chinese break points
+  // This is critical: "让我查一下～" must be emitted IMMEDIATELY so TTS can start
+  // while the tool call executes in the background
+  const enders = /[。！？.!?\n～〜；;：…—]/
 
   for await (const token of tokens) {
     buffer += token
@@ -255,7 +258,7 @@ async function* sentenceSplitter(tokens: AsyncGenerator<string>): AsyncGenerator
       const idx = match.index + 1
       const sentence = buffer.slice(0, idx).trim()
       buffer = buffer.slice(idx)
-      if (sentence) yield sentence + ' '
+      if (sentence.length >= 2) yield sentence + ' '  // skip single-char fragments
     }
   }
   if (buffer.trim()) yield buffer.trim()
