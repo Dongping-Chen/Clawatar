@@ -15,9 +15,20 @@ export const idleConfig: IdleConfig = {
 // noidle mode: follower instances skip idle animation picks, only respond to WS commands
 const isFollower = new URLSearchParams(window.location.search).has('noidle')
 
-// Meeting mode: no random idle animations, only respond to speak commands
+// Meeting mode: limited idle animations (subtle only), respond to speak commands
 let meetingMode = false
 export function setMeetingMode(enabled: boolean) { meetingMode = enabled }
+
+// Meeting-friendly idle categories — subtle seated/standing animations only
+const MEETING_IDLE_CATEGORIES: string[] = [
+  '40_Happy Idle',
+  '88_Thinking',
+  '118_Head Nod Yes',
+  '125_Laughing',
+  '119_Idle',
+  '161_Waving',
+  '145_Shrugging',
+]
 
 // DM Motionpack animations organized by emotion (from vrma_catalog.json)
 // These are high-quality Booth companion animations
@@ -234,8 +245,6 @@ let currentIdleCategory: keyof typeof IDLE_CATEGORIES = 'neutral'
 export function updateStateMachine(elapsed: number) {
   // Follower mode: don't pick idle animations, only respond to WS play_action
   if (isFollower) return
-  // Meeting mode: no random idle animations
-  if (meetingMode) return
   // Activity mode handles its own animations
   if (getActivityMode() !== 'free') return
 
@@ -244,6 +253,21 @@ export function updateStateMachine(elapsed: number) {
   if (elapsed - lastIdleAttempt < idleConfig.idleActionInterval) return
 
   lastIdleAttempt = elapsed
+
+  // Meeting mode: less frequent, subtle animations only
+  if (meetingMode) {
+    if (Math.random() > 0.2) return  // 20% chance (less frequent)
+    const pick = MEETING_IDLE_CATEGORIES[Math.floor(Math.random() * MEETING_IDLE_CATEGORIES.length)]
+    setState('action')
+    loadAndPlayAction(pick, false, () => {
+      resetExpressions()
+      playBaseIdle().then(() => {
+        setState('idle')
+        holdUntil = elapsed + 12 + Math.random() * 15  // longer hold between meeting idles
+      })
+    }).catch(() => { setState('idle') })
+    return
+  }
 
   if (Math.random() > idleConfig.idleActionChance) return
 
@@ -291,8 +315,6 @@ function broadcastIdleAction(actionId: string, expression?: { name: string; weig
 }
 
 export async function requestAction(actionId: string) {
-  // Meeting mode: only allow speaking gestures, block random actions
-  if (meetingMode && state.characterState !== 'speaking') return
   setState('action')
   await loadAndPlayAction(actionId, false, () => {
     resetExpressions()  // Clear expression overrides when action ends

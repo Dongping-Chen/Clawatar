@@ -1,0 +1,40 @@
+{
+  "id": "kitchen",
+  "name": "Warm Kitchen",
+  "room": { "width": 5, "depth": 4, "height": 3 },
+  "floor": { "color": "#D4C4A8" },
+  "walls": { "color": "#FFF8EE" },
+  "objects": [
+    { "assetId": "kenney:kitchenCabinet", "position": [-2.2, 0, -1.7], "rotation": [0, 90, 0] },
+    { "assetId": "kenney:kitchenCabinetDrawer", "position": [-2.2, 0, -0.7], "rotation": [0, 90, 0] },
+    { "assetId": "kenney:kitchenSink", "position": [-2.2, 0, 0.3], "rotation": [0, 90, 0] },
+    { "assetId": "kenney:kitchenCabinetUpper", "position": [-2.2, 1.4, -1.7], "rotation": [0, 90, 0] },
+    { "assetId": "kenney:kitchenCabinetUpperDouble", "position": [-2.2, 1.4, -0.5], "rotation": [0, 90, 0] },
+    { "assetId": "kenney:kitchenStove", "position": [2.2, 0, -1.5], "rotation": [0, -90, 0] },
+    { "assetId": "kenney:hoodModern", "position": [2.2, 1.8, -1.5], "rotation": [0, -90, 0] },
+    { "assetId": "kenney:kitchenFridgeLarge", "position": [2.2, 0, 1.2], "rotation": [0, -90, 0] },
+    { "assetId": "kenney:kitchenMicrowave", "position": [2.2, 0.76, -0.3], "rotation": [0, -90, 0] },
+    { "assetId": "kenney:kitchenCoffeeMachine", "position": [-2.2, 0.76, -1.5] },
+    { "assetId": "kenney:kitchenBlender", "position": [-2.2, 0.76, -0.3] },
+    { "assetId": "kenney:toaster", "position": [-2.2, 0.76, 0.0] },
+    { "assetId": "kenney:kitchenBar", "position": [0, 0, 0.5] },
+    { "assetId": "kenney:kitchenBarEnd", "position": [-0.5, 0, 0.5] },
+    { "assetId": "kenney:stoolBar", "position": [-0.3, 0, 1.2] },
+    { "assetId": "kenney:stoolBar", "position": [0.3, 0, 1.2] },
+    { "assetId": "kenney:stoolBarSquare", "position": [0.9, 0, 1.2] },
+    { "assetId": "kenney:plantSmall1", "position": [-2.2, 0.76, 0.5] },
+    { "assetId": "kenney:trashcan", "position": [2.0, 0, 1.8] },
+    { "assetId": "kenney:lampSquareCeiling", "position": [0, 2.8, 0] }
+  ],
+  "lighting": {
+    "preset": "bright",
+    "overrides": [
+      { "type": "point", "position": [0, 2.5, 0], "intensity": 0.6, "color": "#FFFFFF" },
+      { "type": "point", "position": [-2.0, 1.2, 0], "intensity": 0.3, "color": "#FFF5DD" }
+    ]
+  },
+  "character": {
+    "spawnPosition": [0, 0, -0.3],
+    "walkBounds": { "minX": -1.2, "maxX": 1.2, "minZ": -1.0, "maxZ": 0.8 }
+  }
+}

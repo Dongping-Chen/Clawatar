@@ -17,6 +17,7 @@ import { initBackgrounds, updateBackgroundEffects } from './backgrounds'
 import { initCameraPresets, updateCameraPresets } from './camera-presets'
 import { initRoomScene, enableRoomMode, isRoomMode, getWalkableBounds, updateRoom, clampCameraToRoom, updateRoomWallTransparency } from './room-scene'
 import { updateActivityMode } from './activity-modes'
+import { loadRoomGLB, isSceneLoaded, getSceneWalkBounds, SCENE_LAYER, SCENE_EXPOSURE, CHAR_EXPOSURE } from './scene-system'
 import type { AppState } from './types'
 
 export const state: AppState = {
@@ -26,6 +27,10 @@ export const state: AppState = {
   mouseLookEnabled: true,
   characterState: 'idle',
 }
+
+// Debug: expose state + scene for console material inspection
+;(window as any).__app_state = state
+;(window as any).__three_scene = scene
 
 // Pre-allocated vectors for render loop (avoid per-frame GC pressure)
 const _hipsWorld = new THREE.Vector3()
@@ -78,6 +83,19 @@ async function autoLoad() {
       ;(window as any).__clawatar = { vrm: true, ready: true }
       try { (window as any).webkit?.messageHandlers?.clawatar?.postMessage({event: 'modelLoaded'}) } catch {}
       await playBaseIdle('119_Idle')
+
+      // Auto-load room GLB if ?room= param is set
+      const roomParam = params.get('room')
+      if (roomParam) {
+        const roomPath = roomParam.endsWith('.glb') ? roomParam : `scenes/${roomParam}.glb`
+        console.log('[autoLoad] Loading room:', roomPath)
+        try {
+          await loadRoomGLB(roomPath)
+          console.log('[autoLoad] Room loaded OK')
+        } catch (e) {
+          console.warn('[autoLoad] Room load failed:', e)
+        }
+      }
       return
     } catch (e) {
       console.warn('Auto-load failed:', e)
@@ -186,6 +204,40 @@ function init() {
   initChatAndVoice()
   connectWS()
   autoLoad()
+
+  // ═══ KEYBOARD SHORTCUTS for scene switching (works in ALL modes incl. embed/meeting) ═══
+  const ROOM_KEYS: Record<string, string> = {
+    '1': 'scenes/cozy-bedroom-v8.glb',
+    '2': 'scenes/swimming-pool.glb',
+    '3': 'scenes/cafe.glb',
+    '4': 'scenes/phone-booth.glb',
+    '5': 'scenes/sunset-balcony.glb',
+    '6': 'scenes/izakaya.glb',
+    '0': '',  // unload
+  }
+  document.addEventListener('keydown', async (e) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+    const roomPath = ROOM_KEYS[e.key]
+    if (roomPath !== undefined) {
+      if (roomPath === '') {
+        const { unloadScene } = await import('./scene-system')
+        unloadScene()
+        console.log('[keyboard] Scene unloaded')
+      } else {
+        try {
+          const mod = await import('./scene-system')
+          await mod.loadRoomGLB(roomPath)
+          console.log('[keyboard] Loaded:', roomPath)
+        } catch (err) {
+          console.error('[keyboard] Load failed:', err)
+        }
+      }
+      // Sync dropdown if it exists
+      const sel = document.getElementById('room-select') as HTMLSelectElement | null
+      if (sel) sel.value = roomPath
+    }
+  })
+
   animate()
 }
 
@@ -243,11 +295,12 @@ function animate() {
   updateLipSync()
   if (state.vrm) state.vrm.update(delta)
 
-  // ROOM MODE: Clamp VRM root position to walkable bounds
+  // ROOM/SCENE MODE: Clamp VRM root position to walkable bounds
   // Some animations have root motion that moves the character into walls/furniture
-  if (state.vrm && isRoomMode()) {
+  const inConstrainedMode = isRoomMode() || isSceneLoaded()
+  if (state.vrm && inConstrainedMode) {
     const vrmScene = state.vrm.scene
-    const bounds = getWalkableBounds()
+    const bounds = isSceneLoaded() ? getSceneWalkBounds() : getWalkableBounds()
     // Clamp the VRM scene root (character position)
     vrmScene.position.x = Math.max(bounds.minX, Math.min(bounds.maxX, vrmScene.position.x))
     vrmScene.position.z = Math.max(bounds.minZ, Math.min(bounds.maxZ, vrmScene.position.z))
@@ -266,7 +319,32 @@ function animate() {
         rootPos.x += (clampedX - _hipsWorld.x)
         rootPos.z += (clampedZ - _hipsWorld.z)
       }
+      // Also clamp hips Y rotation to prevent backward-facing
+      const localRot = hipsBone.rotation.y
+      if (Math.abs(localRot) > Math.PI / 3) {
+        hipsBone.rotation.y = Math.sign(localRot) * Math.PI / 3
+      }
     }
+
+    // Clamp VRM root Y rotation (strict ±45° in room mode)
+    {
+      const root = state.vrm.scene
+      let ry = root.rotation.y
+      while (ry > Math.PI) ry -= 2 * Math.PI
+      while (ry < -Math.PI) ry += 2 * Math.PI
+      const MAX_YAW = Math.PI / 4
+      root.rotation.y = Math.max(-MAX_YAW, Math.min(MAX_YAW, ry))
+    }
+  }
+
+  // GLOBAL: Clamp VRM root Y rotation (lenient ±90°) — prevent 180° rotation in ALL modes
+  if (state.vrm) {
+    const root = state.vrm.scene
+    let ry = root.rotation.y
+    while (ry > Math.PI) ry -= 2 * Math.PI
+    while (ry < -Math.PI) ry += 2 * Math.PI
+    const MAX_YAW = Math.PI / 2
+    root.rotation.y = Math.max(-MAX_YAW, Math.min(MAX_YAW, ry))
   }
 
   updateStateMachine(elapsed)
@@ -297,12 +375,18 @@ function animate() {
   updateLookAt()
 
   controls.update()
-  // Use composer (bloom) if available, otherwise direct render
+
+  // Single-pass rendering: scene GLB emissive is pre-dimmed in loadRoomGLB.
+  // Use composer (with bloom) for ALL modes — character gets glow effect.
   if (composer) {
     composer.render()
   } else {
     renderer.render(scene, camera)
   }
+
+  // NOTE: Alpha-clear fix removed — pool v7 now uses emissive-only materials
+  // (same approach as all other working scenes). Standard PBR materials with
+  // alpha:true WebGLRenderer = transparent black. Emissive-only = works.
 }
 
 init()

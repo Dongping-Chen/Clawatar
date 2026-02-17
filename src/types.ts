@@ -18,11 +18,6 @@ export interface IdleConfig {
   idleMaxHoldSeconds: number
 }
 
-export interface CrossfadeConfig {
-  minCrossfadeDuration: number
-  maxCrossfadeDuration: number
-}
-
 export interface WSCommand {
   type: string
   // Legacy

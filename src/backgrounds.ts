@@ -3,6 +3,11 @@ import { lightingRig, scene } from './scene'
 
 type BackgroundPreset = 'default' | 'sakura' | 'night' | 'cafe' | 'sunset'
 
+/** When true, scene-system controls the background — skip all background effects */
+let _suppressedByScene = false
+export function suppressBackgrounds(v: boolean) { _suppressedByScene = v }
+export function isBackgroundSuppressed() { return _suppressedByScene }
+
 type LightConfig = {
   ambient: [number, number]
   sky: [number, number, number]
@@ -67,6 +72,7 @@ export function initBackgrounds() {
 }
 
 export function updateBackgroundEffects(elapsed: number, delta: number) {
+  if (_suppressedByScene) return
   if (!activeParticles) return
   if (!activeParticles.geometry.getAttribute('position')) return
 

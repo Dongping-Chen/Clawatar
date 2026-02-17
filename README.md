@@ -48,11 +48,14 @@ Open `http://localhost:3000` and drop your `.vrm` model onto the page.
 - **Voice output** — ElevenLabs TTS (optional, requires API key)
 - **AI conversation** — powered by [OpenClaw](https://github.com/openclaw/openclaw) (optional)
 
-### 🏠 3D Room Environment
-- **Procedural room** — desk, bed, bookshelf, fairy lights, 30+ objects
-- **3 themes** — Cozy (warm afternoon), Study (desk lamp), Night (fairy lights + bloom)
-- **Camera freedom** — orbit ±135° inside the room, walls fade on approach
+### 🏠 3D Scene System (Blender Pipeline)
+- **6 scenes** — Cozy Bedroom 🛏️, Izakaya 🏮, Café ☕, Phone Booth 📞, Sunset Balcony 🌇, Swimming Pool 🏊
+- **Blender procedural pipeline** — Python scripts generate geometry + materials + lights → Cycles render → GLB export
+- **Emissive-only materials** — all scenes use Emission shaders for reliable rendering in Three.js
+- **Auto emissive lights** — brightest emissive meshes automatically spawn PointLights
+- **Camera freedom** — orbit ±135° inside scenes, configurable per-scene camera + exposure
 - **Activity modes** — Study, Exercise, Chill with themed camera angles + animations
+- **Scene loader** — `loadRoomGLB()` loads single GLB as entire environment with character lighting
 
 ### 📹 Virtual Meeting Avatar
 - **Join Google Meet / Zoom** — avatar appears via OBS Virtual Camera
@@ -131,6 +134,40 @@ Clawatar includes an [OpenClaw](https://github.com/openclaw/openclaw) skill at `
 | `npm run catalog` | Regenerate animation catalog |
 | `npm run meeting` | Virtual meeting bridge v2 (continuous listen + smart trigger) |
 | `npm run meeting:v3` | Virtual meeting bridge v3 (streaming VAD + streaming TTS) |
+
+## Building Scenes (Blender Pipeline)
+
+Each scene is a Blender Python script that generates procedural geometry → exports GLB.
+
+```bash
+# Build a scene
+/Applications/Blender.app/Contents/MacOS/Blender --background --python blender/build_izakaya_v4.py
+
+# Copy to public
+cp /tmp/izakaya.glb public/scenes/izakaya.glb
+
+# Load in viewer
+open http://localhost:3000?room=izakaya
+```
+
+### Scene scripts (in `blender/`)
+| Script | Scene | GLB Size |
+|--------|-------|----------|
+| `build_room_v9.py` | Cozy Bedroom | 3.7 MB |
+| `build_izakaya_v4.py` | Izakaya Bar | 5.9 MB |
+| `build_cafe_v6.py` | Coffee Café | 4.6 MB |
+| `build_phone_booth_v6.py` | Rainy Phone Booth | 1.6 MB |
+| `build_balcony_v8.py` | Sunset Balcony | 7.7 MB |
+| `build_pool_v8.py` | Swimming Pool | 7.1 MB |
+
+### Key rules for scene scripts
+- **All emission strengths ≥ 3.0** — sub-1.0 gets baked dark by glTF exporter
+- **Use Emission shader only** (not Principled BSDF) for reliable Three.js rendering
+- **Cycles renderer** — 64 samples + denoiser
+- **Center stage clear** — character stands at origin (0,0,0)
+- **Background elements at Blender -Y** — they end up behind the character in Three.js
+- **GLB under 8 MB** — optimize mesh complexity
+- See `SCENES.md` for detailed scene configs and review scores
 
 ## Virtual Meeting Setup
 

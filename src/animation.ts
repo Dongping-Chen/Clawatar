@@ -1,42 +1,57 @@
 import { createVRMAnimationClip } from '@pixiv/three-vrm-animation'
 import type { VRMAnimation } from '@pixiv/three-vrm-animation'
 import type { AnimationAction, AnimationClip } from 'three'
-import { LoopOnce, LoopRepeat } from 'three'
+import { LoopOnce, LoopRepeat, Quaternion } from 'three'
 import { state } from './main'
 import { loadVRMA } from './vrm-loader'
-import type { CrossfadeConfig } from './types'
 
 const animationCache = new Map<string, VRMAnimation>()
 let currentAction: AnimationAction | null = null
 let baseIdleAction: AnimationAction | null = null
 export let currentCategory: string = 'idle'
 
-export const crossfadeConfig: CrossfadeConfig = {
-  minCrossfadeDuration: 0.35,
-  maxCrossfadeDuration: 0.8,
+/** Scale factor for crossfade duration. Higher = slower transitions. Adjust via WS or console. */
+export let crossfadeScale = 2.0
+const CROSSFADE_MIN = 0.1
+const CROSSFADE_MAX = 2.0
+
+export function setCrossfadeScale(s: number) {
+  crossfadeScale = Math.max(0.1, s)
+  console.log(`[animation] crossfadeScale = ${crossfadeScale}`)
 }
 
-const CATEGORY_CROSSFADE: Record<string, number> = {
-  'dance→idle': 1.2,
-  'dance→dance': 0.8,
-  'idle→action': 0.3,
-  'action→idle': 0.5,
-  'tired→idle': 0.8,
-  'idle→dance': 0.6,
-  'default': 0.4,
+/**
+ * Compute pose distance between current VRM skeleton and a target clip's first frame.
+ * Returns 0–1 (0 = identical pose, 1 = maximally different).
+ */
+function computePoseDistance(targetClip: AnimationClip): number {
+  const { vrm } = state
+  if (!vrm) return 0.5
+
+  const tmpQuat = new Quaternion()
+  let totalAngle = 0
+  let count = 0
+
+  for (const track of targetClip.tracks) {
+    if (!track.name.endsWith('.quaternion') || track.values.length < 4) continue
+    const nodeName = track.name.replace('.quaternion', '')
+    const node = vrm.scene.getObjectByName(nodeName)
+    if (!node) continue
+
+    tmpQuat.set(track.values[0], track.values[1], track.values[2], track.values[3])
+    totalAngle += node.quaternion.angleTo(tmpQuat)
+    count++
+  }
+
+  // Average angular distance normalized to 0–1 (PI radians = max)
+  return count > 0 ? (totalAngle / count) / Math.PI : 0.5
 }
 
-function getCrossfadeDuration(fromClip: AnimationClip | null, toClip: AnimationClip | null, toCategory?: string): number {
-  if (!fromClip || !toClip) return crossfadeConfig.minCrossfadeDuration
-
-  const fromCat = currentCategory
-  const toCat = toCategory || 'action'
-  const key = `${fromCat}→${toCat}`
-  if (CATEGORY_CROSSFADE[key] !== undefined) return CATEGORY_CROSSFADE[key]
-
-  // Fallback: heuristic based on clip duration difference
-  const ratio = Math.abs(fromClip.duration - toClip.duration) / Math.max(fromClip.duration, toClip.duration, 0.1)
-  return crossfadeConfig.minCrossfadeDuration + ratio * (crossfadeConfig.maxCrossfadeDuration - crossfadeConfig.minCrossfadeDuration)
+/** Crossfade duration based on actual pose difference × scale. */
+function getCrossfadeDuration(targetClip: AnimationClip): number {
+  const distance = computePoseDistance(targetClip)
+  const duration = CROSSFADE_MIN + distance * crossfadeScale
+  return Math.min(duration, CROSSFADE_MAX)
 }
 
 async function getVRMA(actionId: string): Promise<VRMAnimation> {
@@ -56,7 +71,7 @@ export async function loadAndPlayAction(actionId: string, loop: boolean = false,
   const newAction = mixer.clipAction(clip)
 
   const targetCategory = category || 'action'
-  const fadeDuration = getCrossfadeDuration(currentAction?.getClip() ?? null, clip, targetCategory)
+  const fadeDuration = getCrossfadeDuration(clip)
   currentCategory = targetCategory
 
   newAction.reset()

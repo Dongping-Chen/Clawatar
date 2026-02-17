@@ -4,7 +4,8 @@ import { setExpression, getExpressionOverrides } from './expressions'
 import { setTransparentBackground } from './scene'
 import { state } from './main'
 import { requestAction, onStateChange, idleConfig } from './action-state-machine'
-import { crossfadeConfig } from './animation'
+import { setCrossfadeScale, crossfadeScale } from './animation'
+import { loadSceneFromJSON, unloadScene, isActive } from './scene-system/index'
 
 // Actions loaded from catalog
 let ALL_ACTIONS: string[] = []
@@ -28,6 +29,10 @@ async function loadCatalog() {
 const EXPRESSIONS = ['happy', 'angry', 'sad', 'surprised', 'relaxed', 'neutral']
 
 export async function initUI() {
+  // Expose crossfade scale for console tuning: window.setCrossfadeScale(2.0)
+  ;(window as any).setCrossfadeScale = setCrossfadeScale
+  ;(window as any).getCrossfadeScale = () => crossfadeScale
+
   await loadCatalog()
   // State indicator
   const stateEl = document.getElementById('state-indicator')
@@ -111,6 +116,56 @@ export async function initUI() {
   document.getElementById('transparent-bg')?.addEventListener('change', (e) => {
     setTransparentBackground((e.target as HTMLInputElement).checked)
   })
+
+  // Scene selector
+  const sceneSelect = document.getElementById('scene-select') as HTMLSelectElement | null
+  if (sceneSelect) {
+    sceneSelect.addEventListener('change', () => {
+      const val = sceneSelect.value
+      if (!val) {
+        // "None" selected — unload scene, restore flat background
+        if (isActive()) unloadScene()
+      } else {
+        loadSceneFromJSON(`scenes/${val}.json`).catch(e => {
+          console.error('Scene load failed:', e)
+          sceneSelect.value = ''
+        })
+      }
+    })
+  }
+
+  // 3D Stage (Room GLB) selector
+  const roomSelect = document.getElementById('room-select') as HTMLSelectElement | null
+  if (roomSelect) {
+    console.log('[ui] Room selector found, attaching handler')
+    roomSelect.addEventListener('change', async () => {
+      const val = roomSelect.value
+      console.log('[ui] Room selected:', val || '(none)')
+      if (!val) {
+        // "None" — unload room, restore default
+        try {
+          const { unloadScene } = await import('./scene-system')
+          unloadScene()
+          console.log('[ui] Scene unloaded')
+        } catch (e) {
+          console.error('[ui] Unload failed:', e)
+        }
+      } else {
+        try {
+          console.log('[ui] Loading room GLB:', val)
+          const { loadRoomGLB } = await import('./scene-system')
+          await loadRoomGLB(val)
+          console.log('[ui] Room loaded OK:', val)
+        } catch (e) {
+          console.error('[ui] Room load FAILED:', e)
+          roomSelect.value = ''
+          alert('Scene load failed: ' + (e as Error).message)
+        }
+      }
+    })
+  } else {
+    console.warn('[ui] room-select element not found!')
+  }
 
   // Collapsible sections
   document.querySelectorAll('.section-header').forEach(header => {

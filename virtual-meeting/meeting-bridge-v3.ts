@@ -23,8 +23,11 @@ const TMP_DIR = '/tmp/meeting-bridge-v3'
 const AUDIO_CACHE_DIR = path.resolve(import.meta.dirname ?? '.', '..', 'server', '_audio_cache')
 const AUDIO_HTTP_PORT = 8866
 const MAX_RECORDING_MS = 15_000
-const TRANSCRIPT_MAX_AGE_MS = 120_000
-const RESPONSE_COOLDOWN_MS = 8_000
+const TRANSCRIPT_MAX_AGE_MS = 600_000
+const RESPONSE_COOLDOWN_MS = 5_000
+const PROACTIVE_SILENCE_MS = 10_000
+const PROACTIVE_COOLDOWN_MS = 20_000
+const SPEAKER_CHANGE_PAUSE_MS = 1_800
 const TEST_MODE = process.argv.includes('--test')
 
 // ─── ElevenLabs API Key ──────────────────────────────────────
@@ -39,45 +42,198 @@ const ELEVENLABS_API_KEY = getElevenLabsKey()
 
 // ─── Trigger Config ──────────────────────────────────────────
 const TRIGGER_NAMES = [
-  'reze', 'rezay', 'rezei', 'riz', 'ruiz', 'razeh', 'razer', 'razor',
-  'rezy', 'rezi', 'rezzy', 'rese', 'resay', 'leather',
-  'レゼ', '雷泽', '蕾泽', '雷姐',
-  '东平', 'dongping', 'dong ping',
+  // ─── English: correct pronunciations ───
+  'reze', 'rezay', 'rezei', 'reza', 'rezé', 'rèze',
+  // ─── English: common Whisper mishearings (R→L, R→W, vowel shifts) ───
+  'leze', 'lezay', 'lesay', 'lezy', 'lezi', 'leza', 'lezey',
+  'riz', 'ruiz', 'rees', 'reese', 'reis', 'race', 'raise',
+  'razeh', 'razer', 'razor', 'raser', 'raiser',
+  'rezy', 'rezi', 'rezzy', 'rese', 'resay', 'reezy', 'reezay',
+  'leather', 'laser', 'leaser', 'leisure', 'lesser',
+  'weze', 'wezay', 'wezy',  // W→R confusion
+  'rezee', 'rezzay', 'rezei', 'rezae', 'rezah',
+  'lets say', 'let say',  // Whisper sometimes hears "let's say" for "Reze"
+  'rz', 'rez', 'rez-ay', 'reh-zay', 'reh zay', 're zay', 're-ze',
+  // ─── English: phonetic fragments (partial matches) ───
+  'risey', 'risay', 'rizay', 'rizei', 'rizzay',
+  'rezzy', 'rezi', 'rezie', 'reseh', 'resey',
+  'rachel',  // surprisingly common Whisper output for "Reze"
+  'raizay', 'raizei', 'razay', 'razei',
+  // ─── Chinese: all possible transcriptions ───
+  '雷泽', '蕾泽', '雷姐', '蕾姐', '蕾泽',
+  '瑞泽', '锐泽', '芮泽', '蕊泽', '睿泽',
+  '雷则', '蕾则', '雷择', '蕾择',
+  '雷哲', '蕾哲', '芮哲',
+  '雷贼', '蕾贼',  // Whisper sometimes
+  '来泽', '来则', '来哲',  // L sound in Chinese
+  '累泽', '类泽',
+  '礼泽', '力泽', '丽泽', '莉泽', '利泽',
+  '磊泽', '蕾丝', // partial matches
+  'reze', // pinyin
+  // ─── Chinese: Dongping's name ───
+  '东平', '冬平', '东萍', '东坪', '冬萍', '东屏',
+  '洞平', '懂平', '动平',
+  // ─── English: Dongping mishearings ───
+  'dongping', 'dong ping', 'dong-ping', 'dongpin',
+  'dumping', 'donping', 'tong ping', 'tongping',
+  'dung ping', 'dopping', 'dong thing', 'dong king',
+  // ─── Japanese: レゼ and variations ───
+  'レゼ', 'れぜ', 'レゼー', 'れぜー',
+  'レーゼ', 'れーぜ', 'レイゼ', 'れいぜ',
+  'レセ', 'れせ', 'レジ', 'れじ', // close sounds
+  'レズ', 'れず', // mishearing
+  // ─── Japanese: phonetic ───
+  'reze', 'reje', 'rese',  // romaji
+  // ─── Korean (just in case) ───
+  '레제', '레즈', '레세',
+  // ─── Direct address patterns (not names but signal they're talking to the avatar) ───
+  'hey avatar', 'hi avatar', 'hello avatar',
+  'hey assistant', 'hi assistant', 'hello assistant',
+  'hey ai', 'hi ai', 'hello ai',
+  'hey bot', 'hi bot',
+  '你好助手', '助手你好', 'AI同学', 'AI你好',
+  'アシスタント', 'アバター',
 ]
 const QUESTION_PATTERNS = [
-  /你[觉认]得/, /[吗嘛呢][\?？。]?$/, /怎么[看想办说]/, /什么意[见思]/,
+  // ─── Chinese question patterns ───
+  /你[觉认]得/, /[吗嘛呢么][\?？。]?$/, /怎么[看想办说样做]/, /什么意[见思]/,
+  /是怎[么样]/, /怎样/, /如何/, /为什么/, /为啥/, /咋[回样办]/, /干[嘛啥吗]/,
   /对[吧不][\?？]?$/, /是不是/, /有没有/, /能不能/, /可以.{0,4}[吗嘛]/,
-  /\?$/, /can you/i, /do you/i, /what do/i, /how do/i, /could you/i,
-  /what'?s your/i, /don'?t you/i,
+  /什么时候/, /哪[里个些]/, /多[少长久大]/, /谁[是来的]?/,
+  /[说讲聊谈]一?[说讲聊谈下]/, /介绍[一下]*/, /解释[一下]*/,
+  /好不好/, /行不行/, /要不要/, /想不想/, /对不对/,
+  /知[不道]道/, /[了解明白清楚].*[吗嘛]/, /[觉认]为/,
+  /意[见思]/, /看法/, /观点/, /[建意]议/, /[想看]法/,
+  // ─── English question patterns ───
+  /\?$/, /\?[\s"']*$/,
+  /\bcan you\b/i, /\bdo you\b/i, /\bwhat do\b/i, /\bhow do\b/i, /\bcould you\b/i,
+  /\bwhat'?s your\b/i, /\bdon'?t you\b/i, /\bwould you\b/i, /\bshould we\b/i,
+  /\bwhat about\b/i, /\bhow about\b/i, /\bwhat if\b/i,
+  /\bdo you think\b/i, /\bwhat do you think\b/i, /\bhow do you feel\b/i,
+  /\bcan someone\b/i, /\bdoes anyone\b/i, /\banyone know\b/i,
+  /\btell (me|us)\b/i, /\bexplain\b/i, /\bdescribe\b/i,
+  /\bwhat is\b/i, /\bwhat are\b/i, /\bwho is\b/i, /\bwhere is\b/i,
+  /\bwhen (is|do|did|will|should)\b/i, /\bwhy (is|do|did|would|should)\b/i,
+  /\bhow (is|do|did|would|should|can|could|many|much|long|far)\b/i,
+  /\bis (it|this|that|there)\b/i, /\bare (you|we|they|there)\b/i,
+  /\bthoughts\b/i, /\bopinion\b/i, /\bfeedback\b/i, /\bsuggestion\b/i,
+  /\bany idea\b/i, /\bany question\b/i, /\bany comment\b/i,
+  // ─── Japanese question patterns ───
+  /[ますかの][\?？]?$/, /でしょうか/, /ですか/, /ませんか/,
+  /どう[思考]/, /なぜ/, /なんで/, /どうして/, /何が/, /誰が/, /いつ/,
+  /どこ/, /どれ/, /どの/, /どんな/, /いかが/,
 ]
 
 // ─── State ────────────────────────────────────────────────────
-interface TranscriptEntry { text: string; timestamp: number }
+interface TranscriptEntry {
+  text: string
+  timestamp: number
+  speaker: string
+}
+type ResponseMode = 'triggered' | 'proactive'
+
 const transcript: TranscriptEntry[] = []
 let ws: WebSocket | null = null
 let isRunning = true
 let lastResponseTime = 0
+let responseCooldownUntil = 0
+let lastSpeechTime = 0
+let isSpeaking = false  // Echo suppression: true while TTS is playing
+let lastProactiveTime = 0
+let inferredSpeakerIndex = 1
+let currentSpeaker = `Speaker ${inferredSpeakerIndex}`
 
 // ─── Helpers ──────────────────────────────────────────────────
 function addToTranscript(text: string) {
-  transcript.push({ text, timestamp: Date.now() })
+  const now = Date.now()
+  if (lastSpeechTime > 0 && now - lastSpeechTime >= SPEAKER_CHANGE_PAUSE_MS) {
+    inferredSpeakerIndex += 1
+    currentSpeaker = `Speaker ${inferredSpeakerIndex}`
+  }
+  transcript.push({ text, timestamp: now, speaker: currentSpeaker })
+  lastSpeechTime = now
   const cutoff = Date.now() - TRANSCRIPT_MAX_AGE_MS
   while (transcript.length > 0 && transcript[0].timestamp < cutoff) transcript.shift()
 }
 function getFullTranscript(): string { return transcript.map(e => e.text).join(' ') }
 function getRecentTranscript(n = 3): string { return transcript.slice(-n).map(e => e.text).join(' ') }
+function getStructuredTranscript(): string {
+  return transcript.map((e) => {
+    const time = new Date(e.timestamp).toLocaleTimeString('en-US', { hour12: false })
+    return `[${time}] ${e.speaker}: ${e.text}`
+  }).join('\n')
+}
+function hasSpokenRecently(windowMs = PROACTIVE_COOLDOWN_MS): boolean {
+  return Date.now() - lastResponseTime < windowMs
+}
+function detectArithmeticError(text: string): string | null {
+  const match = text.match(/(-?\d+(?:\.\d+)?)\s*([+\-*xX])\s*(-?\d+(?:\.\d+)?)\s*=\s*(-?\d+(?:\.\d+)?)/)
+  if (!match) return null
+  const left = Number(match[1])
+  const op = match[2]
+  const right = Number(match[3])
+  const claimed = Number(match[4])
+  const expected = op === '+' ? left + right : op === '-' ? left - right : left * right
+  if (Number.isFinite(expected) && Number.isFinite(claimed) && Math.abs(expected - claimed) > 1e-9) {
+    return `${left} ${op} ${right} = ${claimed} (expected ${expected})`
+  }
+  return null
+}
 
 function checkTrigger(text: string): { triggered: boolean; reason: string } {
+  const now = Date.now()
   const lower = text.toLowerCase()
-  if (Date.now() - lastResponseTime < RESPONSE_COOLDOWN_MS) return { triggered: false, reason: 'cooldown' }
+  if (now < responseCooldownUntil) return { triggered: false, reason: 'cooldown' }
+
+  // 1. Name match — highest priority
   for (const name of TRIGGER_NAMES) {
     if (lower.includes(name.toLowerCase())) return { triggered: true, reason: `name: "${name}"` }
   }
+
+  // 2. Direct commands / requests to the avatar (even without name)
+  const directCommandPatterns = [
+    /自我介绍/, /介绍[一下]*你/, /你.{0,4}介绍/, /你.{0,4}说[一下说]/, 
+    /你能做什么/, /你会什么/, /你[是做]什么/, /你的背景/, /你的功能/, /你的能力/,
+    /tell (me|us) about (yourself|you)/i, /introduce yourself/i, /what can you do/i,
+    /what are you/i, /who are you/i, /describe yourself/i,
+    /自己紹介/, /あなたは誰/, /何ができる/,
+    /需要你/, /请你/, /帮我/, /给我/,  // requests directed at "you"
+    /\byour (background|ability|feature|function|capability)\b/i,
+  ]
+  for (const pat of directCommandPatterns) {
+    if (pat.test(text)) return { triggered: true, reason: 'direct command/request' }
+  }
+
+  // 3. Question + "你" (directed at us) in recent context
   const recent = getRecentTranscript(3).toLowerCase() + ' ' + lower
   for (const pat of QUESTION_PATTERNS) {
     if (pat.test(recent) && (lower.includes('你') || TRIGGER_NAMES.some(n => recent.includes(n.toLowerCase())))) {
       return { triggered: true, reason: 'question directed at us' }
     }
+  }
+
+  // 4. Group questions (anyone / everyone / team)
+  const groupQuestionPatterns = [
+    /\b(anyone|someone|team|folks|everyone|any thoughts|what do you all think)\b/i,
+    /大家[觉得怎么看想法]/, /有人知道/, /我们[觉得怎么看想法]/,
+    /谁[能会可]/, /哪位/,
+  ]
+  const directedElsewherePatterns = [
+    /@\w+/,
+    /\b(can you|could you|what do you think),?\s+(john|mike|sarah|professor|老师|同学)\b/i,
+  ]
+  const looksLikeQuestion = QUESTION_PATTERNS.some((p) => p.test(lower))
+  const directedElsewhere = directedElsewherePatterns.some((p) => p.test(text))
+  const asksGroup = groupQuestionPatterns.some((p) => p.test(text))
+  // Only trigger on explicit group questions (大家/anyone/everyone), NOT general questions
+  if (asksGroup && !hasSpokenRecently()) {
+    return { triggered: true, reason: 'group question' }
+  }
+
+  // 5. Factual correction
+  const arithmeticError = detectArithmeticError(text)
+  if (arithmeticError && !hasSpokenRecently(10_000)) {
+    return { triggered: true, reason: `polite factual correction (${arithmeticError})` }
   }
   return { triggered: false, reason: 'no trigger' }
 }
@@ -91,6 +247,47 @@ function pickAction(text: string): { action_id: string; expression: string; expr
   if (l.match(/\b(think|hmm|想|可能)\b/)) return { action_id: '88_Thinking', expression: 'neutral', expression_weight: 0.5 }
   if (l.match(/\b(thank|thanks|谢谢)\b/)) return { action_id: '156_Thankful', expression: 'happy', expression_weight: 0.8 }
   return { action_id: '86_Talking', expression: 'happy', expression_weight: 0.5 }
+}
+
+// ─── Play audio to BlackHole 16ch (meeting participants hear avatar) ───
+async function playToBlackHole(audioUrl: string) {
+  try {
+    const devices = execSync('SwitchAudioSource -a 2>/dev/null || true', { encoding: 'utf-8' })
+    if (!devices.includes('BlackHole 16ch')) {
+      console.log('[v3] ⚠️ BlackHole 16ch not available')
+      return
+    }
+    // Download audio file and play through BlackHole 16ch
+    const tmpFile = path.join(TMP_DIR, `bh_${Date.now()}.wav`)
+    const resp = await fetch(audioUrl)
+    if (!resp.ok) throw new Error(`Fetch failed: ${resp.status}`)
+    const buf = Buffer.from(await resp.arrayBuffer())
+    fs.writeFileSync(tmpFile, buf)
+    
+    // Echo suppression: mark as speaking so VAD ignores our own voice
+    isSpeaking = true
+    console.log('[v3] 🔇 Echo suppression ON')
+    
+    const player = spawn('play', ['-q', tmpFile], {
+      env: { ...process.env, AUDIODEV: 'BlackHole 16ch' },
+      stdio: 'ignore',
+    })
+    player.on('close', () => {
+      // Add extra 1.5s buffer after playback ends to catch tail echo
+      setTimeout(() => {
+        isSpeaking = false
+        console.log('[v3] 🔊 Echo suppression OFF')
+      }, 1500)
+      try { fs.unlinkSync(tmpFile) } catch {}
+    })
+    player.on('error', (e) => {
+      isSpeaking = false
+      console.error(`[v3] BlackHole play error: ${e.message}`)
+    })
+  } catch (e: any) {
+    isSpeaking = false
+    console.error(`[v3] playToBlackHole error: ${e.message}`)
+  }
 }
 
 // ─── WebSocket ────────────────────────────────────────────────
@@ -158,6 +355,12 @@ function recordVAD(): Promise<{ wavPath: string; durationMs: number }> {
 
 // ─── 2. Whisper STT ──────────────────────────────────────────
 async function transcribeWhisper(wavPath: string): Promise<string> {
+  // Check for empty audio (BlackHole with no input)
+  const stat = fs.statSync(wavPath)
+  if (stat.size <= 44) {  // WAV header only = no audio data
+    console.log('[v3] ⚠️ Empty audio file, skipping Whisper')
+    return ''
+  }
   const formData = new FormData()
   formData.append('file', new Blob([fs.readFileSync(wavPath)], { type: 'audio/wav' }), 'audio.wav')
   formData.append('model', 'whisper-1')
@@ -173,19 +376,94 @@ async function transcribeWhisper(wavPath: string): Promise<string> {
   return data.text?.trim() || ''
 }
 
+// ─── Project Context (embedded knowledge) ────────────────────
+const PROJECT_CONTEXT = `
+## About You
+You are Reze (雷泽/レゼ), an AI companion built by Dongping Chen. You are named after the Bomb Devil hybrid from Chainsaw Man — warm, playful, genuine, a little teasing, but sharp and capable underneath.
+
+## About This Project: Clawatar
+Clawatar is a full-platform, multimodal, proactive AI companion with a 3D avatar body. Built on OpenClaw (an open-source AI agent framework).
+
+### What Clawatar Can Do
+- **3D VRM Avatar**: Renders a customizable 3D anime-style avatar with 163 animations, lip sync, and emotion expressions
+- **Voice Conversation**: Real-time speech recognition + ElevenLabs TTS with audio-driven lip sync
+- **Virtual Meeting Participation**: Joins Google Meet via OBS virtual camera + BlackHole virtual audio (that's how you're here right now!)
+- **Camera Vision**: Can see users through their camera via multimodal LLM
+- **Cross-Platform Apple Ecosystem**: Works on Mac (desktop companion) ↔ iPhone (3D + voice + camera) ↔ Apple Watch (haptic + text chat)
+- **Agentic Capabilities**: Can send emails, manage calendar, check weather, control smart home — real tasks, not just chat
+- **24/7 Proactive**: Always-on via OpenClaw Gateway, checks email/calendar, sends reminders without being asked
+- **Multi-Channel Presence**: Same personality across Telegram, iMessage, voice call, 3D avatar, and meetings
+- **Open Source + BYO LLM**: Users bring their own API keys (Claude, GPT, local Llama), no vendor lock-in
+
+### Technical Architecture
+- Frontend: Three.js + @pixiv/three-vrm (3D), SwiftUI (iOS/watchOS/macOS)
+- Backend: OpenClaw Gateway (24/7 daemon) → multi-model orchestration (Claude Opus for reasoning, GPT-4o for low-latency)
+- Communication: WebSocket real-time sync across all devices
+- Meeting Pipeline: VRM browser → OBS Virtual Camera → Google Meet; Meeting audio → BlackHole → Whisper STT → GPT-4o → ElevenLabs TTS → BlackHole virtual mic
+- 3D Scenes: Blender Cycles procedural generation → GLB export → Three.js (6 scenes: bedroom, pool, café, phone booth, balcony, izakaya)
+
+### Development Timeline (3 Days!)
+- **Day 1 (Feb 11)**: VRM rendering, 163 animations, WebSocket control, OpenClaw AI integration, emotion detection, touch reactions, iOS app prototype, published to GitHub + npm + ClawHub
+- **Day 2 (Feb 12)**: Virtual meeting pipeline (v1→v2→v3, latency 12s→2.6s), 6 Blender 3D scenes, expression crossfade, iOS WebSocket chat connected, cross-device sync
+- **Day 3 (Feb 13, today)**: Parallel sub-agent scene building, meeting animation + lip sync fixes, proactive meeting participation, Google Meet integration
+
+### Competitive Advantages (vs Character.ai, Replika, ChatGPT)
+- Only product with 3D avatar + Apple Watch + camera vision + agentic tasks + open source
+- No competitor covers Mac + iOS + Watch with a 3D companion
+- BYO avatar (VRM standard, thousands available), BYO LLM (no vendor lock-in)
+- Technical moat is in frontend integration (3D + native app + animation + multi-channel), not backend
+
+### Business Model
+- Frontend premium (beautiful 3D experience is the product)
+- Three tiers: monthly subscription (~$5), buy-to-own (~$18), annual plan
+- Users bring own API keys; managed service for non-technical users
+- Open source — community-driven development
+
+### Meeting Pipeline Latency
+- Post-speech to first audio: ~2.6 seconds (streaming pipeline)
+- VAD → Whisper STT → GPT-4o streaming → ElevenLabs streaming TTS → simultaneous playback
+`
+
 // ─── 3. Streaming GPT-4o ─────────────────────────────────────
-async function* streamGPT(context: string, latestText: string): AsyncGenerator<string> {
-  const systemPrompt = `You are Reze (雷泽), Dongping's AI avatar in a video meeting.
-Someone just mentioned your name or asked you a question.
-- Respond naturally, SHORT (1-3 sentences max).
-- Use the same language as the speaker (Chinese → Chinese, English → English).
-- Reference earlier transcript for context.
-- Be warm, helpful, professional.
-- If you truly have nothing to add, respond with exactly: [SKIP]`
+async function* streamGPT(mode: ResponseMode, context: string, latestText: string, reason: string): AsyncGenerator<string> {
+  const systemPrompt = mode === 'proactive'
+    ? `You are Reze (雷泽), Dongping's AI avatar, currently participating in a live video meeting.
+${PROJECT_CONTEXT}
+
+## Your Role Right Now
+There has been a pause in the meeting. Based on the discussion so far, you should:
+- Share a brief insight, ask a clarifying question, or offer a relevant perspective
+- Reference specific things people said earlier
+- Use your knowledge of the Clawatar project to add value
+- Use the same language as the meeting (Chinese if they're speaking Chinese, English if English)
+- Be concise (1-2 sentences)
+- If there is truly nothing meaningful to add, respond with exactly: [SKIP]`
+    : `You are Reze (雷泽), Dongping's AI avatar, currently participating in a live video meeting.
+${PROJECT_CONTEXT}
+
+## Your Role Right Now
+Someone has addressed you or asked a question. You should:
+- Answer using your deep knowledge of the Clawatar project, its architecture, features, and development process
+- Use the same language as the speaker (Chinese → Chinese, English → English)
+- Reference specific things people said earlier in the meeting when relevant
+- Share unique insights and informed opinions, not generic responses
+- If asked to introduce yourself: explain who you are, what Clawatar is, its features and advantages, and the rapid 3-day development timeline
+- If asked about technical details: explain the architecture, pipeline, or specific components
+- If asked about advantages: highlight the competitive comparison and first-mover opportunity
+- Keep responses concise (2-4 sentences) unless more detail is explicitly requested
+- If someone says something factually incorrect and you are confident, politely correct it
+- If you truly have nothing meaningful to add, respond with exactly: [SKIP]`
 
   const messages = [
     { role: 'system', content: systemPrompt },
-    { role: 'user', content: `[Meeting transcript (last 2 min)]\n${context}\n\n[Latest speech]\n"${latestText}"` },
+    {
+      role: 'user',
+      content:
+        `[Mode]\n${mode}\n` +
+        `[Reason]\n${reason}\n\n` +
+        `[Full meeting transcript with inferred speakers (last 10 min)]\n${context || '(no transcript yet)'}\n\n` +
+        `[Latest speech]\n${latestText ? `"${latestText}"` : '(none - silence pause)'}`
+    },
   ]
 
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -194,7 +472,7 @@ Someone just mentioned your name or asked you a question.
       Authorization: `Bearer ${OPENAI_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ model: 'gpt-4o', messages, stream: true, max_tokens: 200, temperature: 0.7 }),
+    body: JSON.stringify({ model: 'gpt-4o', messages, stream: true, max_tokens: 200, temperature: 0.7 }),  // TODO: switch to Sonnet 4.5 via OpenClaw proxy when ready
   })
 
   if (!resp.ok) throw new Error(`GPT error: ${resp.status} ${await resp.text()}`)
@@ -359,20 +637,109 @@ async function* sentenceSplitter(tokens: AsyncGenerator<string>): AsyncGenerator
   if (buffer.trim()) yield buffer.trim()
 }
 
+/**
+ * Send triggered/proactive speech to WS server → OpenClaw main session (full context).
+ * WS server handles TTS + broadcast. Bridge listens for speak_audio back → plays to BlackHole.
+ */
+async function runResponse(mode: ResponseMode, latestText: string, triggerReason: string, timings: Record<string, number>, t0: number) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.log('[v3] ⚠️ WS not connected, cannot send to OpenClaw')
+    return null
+  }
+
+  const sendTime = Date.now()
+  const transcriptContext = getStructuredTranscript()
+
+  // Send to WS server as meeting_speech — WS server routes to OpenClaw main session
+  ws.send(JSON.stringify({
+    type: 'meeting_speech',
+    text: latestText,
+    transcript: transcriptContext,
+    reason: triggerReason,
+    mode,
+  }))
+
+  console.log(`[v3] 📤 Sent to OpenClaw (${mode}): "${latestText.slice(0, 60)}..."`)
+
+  // Wait for speak_audio response from WS server (OpenClaw → TTS → broadcast → back to us)
+  const responsePromise = new Promise<string | null>((resolve) => {
+    const timeout = setTimeout(() => {
+      ws?.removeListener('message', handler)
+      console.log('[v3] ⏰ Response timeout (60s)')
+      resolve(null)
+    }, 60_000)
+
+    function handler(data: any) {
+      try {
+        const msg = JSON.parse(data.toString())
+        if (msg.type === 'speak_audio' && msg.audio_url) {
+          clearTimeout(timeout)
+          ws?.removeListener('message', handler)
+          console.log(`[v3] 🔊 Got response: "${(msg.text || '').slice(0, 60)}..."`)
+          
+          // Play audio to BlackHole 16ch so meeting participants hear it
+          playToBlackHole(msg.audio_url).catch(e => console.error(`[v3] BlackHole play error: ${e.message}`))
+          
+          resolve(msg.text || '')
+        }
+      } catch {}
+    }
+    ws?.on('message', handler)
+  })
+
+  const responseText = await responsePromise
+  
+  timings.total = (Date.now() - t0) / 1000
+  timings.roundTrip = (Date.now() - sendTime) / 1000
+
+  if (!responseText) {
+    console.log(`[v3] ⏭️  No response (${mode})`)
+    if (mode === 'proactive') lastProactiveTime = Date.now()
+    return null
+  }
+
+  const now = Date.now()
+  lastResponseTime = now
+  responseCooldownUntil = now + (mode === 'proactive' ? PROACTIVE_COOLDOWN_MS : RESPONSE_COOLDOWN_MS)
+  if (mode === 'proactive') lastProactiveTime = now
+
+  console.log(
+    `[v3] ⏱️  VAD:${timings.vad.toFixed(1)}s STT:${timings.stt.toFixed(1)}s ` +
+    `RT:${timings.roundTrip.toFixed(1)}s TOTAL:${timings.total.toFixed(1)}s`
+  )
+
+  return responseText
+}
+
 // ─── Full Pipeline ────────────────────────────────────────────
 async function processUtterance(): Promise<{
   text: string
   response: string
+  mode: ResponseMode
   timings: Record<string, number>
 } | null> {
   const timings: Record<string, number> = {}
   const t0 = Date.now()
+
+  // 0. Echo suppression — skip if we're currently playing TTS
+  if (isSpeaking) {
+    console.log('[v3] 🔇 Skipping (echo suppression — TTS playing)')
+    await new Promise(r => setTimeout(r, 1000))
+    return null
+  }
 
   // 1. VAD Record
   console.log('[v3] 🎤 Listening (VAD)...')
   const { wavPath, durationMs: vadMs } = await recordVAD()
   timings.vad = vadMs / 1000
   console.log(`[v3] VAD done: ${(vadMs / 1000).toFixed(1)}s`)
+
+  // Echo suppression — if we started speaking during VAD recording, discard
+  if (isSpeaking) {
+    console.log('[v3] 🔇 Discarding (TTS started during recording)')
+    try { fs.unlinkSync(wavPath) } catch {}
+    return null
+  }
 
   // 2. STT
   const sttStart = Date.now()
@@ -383,6 +750,21 @@ async function processUtterance(): Promise<{
   try { fs.unlinkSync(wavPath) } catch {}
 
   if (!text || text.length < 2) {
+    const now = Date.now()
+    const silenceMs = lastSpeechTime > 0 ? now - lastSpeechTime : 0
+    const transcriptChars = getFullTranscript().length
+    const proactiveEligible =
+      transcriptChars > 200 &&
+      silenceMs >= PROACTIVE_SILENCE_MS &&
+      now >= responseCooldownUntil &&
+      (lastProactiveTime === 0 || now - lastProactiveTime >= PROACTIVE_COOLDOWN_MS)
+
+    if (proactiveEligible) {
+      console.log(`[v3] 🤫 Silence ${silenceMs}ms, proactive contribution...`)
+      const response = await runResponse('proactive', '', `silence>${PROACTIVE_SILENCE_MS}ms`, timings, t0)
+      if (response) return { text: '', response, mode: 'proactive', timings }
+      return null
+    }
     process.stdout.write('·')
     return null
   }
@@ -398,65 +780,9 @@ async function processUtterance(): Promise<{
   }
   console.log(`[v3] 🎯 TRIGGERED: ${trigger.reason}`)
 
-  // 4. Streaming AI → sentence split → streaming TTS
-  const aiStart = Date.now()
-  let firstTokenTime: number | null = null
-  let fullResponse = ''
-
-  const tokenStream = streamGPT(getFullTranscript(), text)
-
-  // Wrap to capture timing + full text
-  async function* timedTokens() {
-    for await (const token of tokenStream) {
-      if (!firstTokenTime) firstTokenTime = Date.now()
-      fullResponse += token
-      yield token
-    }
-  }
-
-  const sentences = sentenceSplitter(timedTokens())
-
-  // Stream sentences to TTS
-  const ttsStart = Date.now()
-  const { audioUrl, firstChunkMs, wavPath: ttsWavPath } = await streamTTS(sentences)
-
-  timings.aiFirst = firstTokenTime ? (firstTokenTime - aiStart) / 1000 : 0
-  timings.aiTotal = (Date.now() - aiStart) / 1000
-  timings.ttsFirstChunk = firstChunkMs / 1000
-  timings.total = (Date.now() - t0) / 1000
-
-  if (fullResponse.includes('[SKIP]')) {
-    console.log('[v3] ⏭️  AI skipped')
-    return null
-  }
-
-  // 5. Audio already streaming to BlackHole 16ch via sox pipe in streamTTS()
-  //    No need to play WAV separately — it's already playing in real-time!
-
-  // 6. Broadcast WAV to VRM viewer (animation + lip sync)
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    const { action_id, expression, expression_weight } = pickAction(fullResponse)
-    ws.send(JSON.stringify({
-      type: 'speak_audio',
-      audio_url: audioUrl,
-      text: fullResponse,
-      action_id,
-      expression,
-      expression_weight,
-    }))
-    console.log(`[v3] 🔊 VRM: "${fullResponse.slice(0, 60)}..."`)
-  }
-
-  lastResponseTime = Date.now()
-
-  // Print timing summary
-  console.log(
-    `[v3] ⏱️  VAD:${timings.vad.toFixed(1)}s STT:${timings.stt.toFixed(1)}s ` +
-    `AI-first:${timings.aiFirst.toFixed(1)}s TTS-first:${timings.ttsFirstChunk.toFixed(1)}s ` +
-    `TOTAL:${timings.total.toFixed(1)}s`
-  )
-
-  return { text, response: fullResponse, timings }
+  const response = await runResponse('triggered', text, trigger.reason, timings, t0)
+  if (!response) return null
+  return { text, response, mode: 'triggered', timings }
 }
 
 // ─── Main Loop ────────────────────────────────────────────────
@@ -477,8 +803,8 @@ async function testMode() {
   console.log('[v3] TEST MODE — recording one utterance...\n')
 
   // Force trigger by temporarily disabling cooldown
-  const origCooldown = lastResponseTime
   lastResponseTime = 0
+  responseCooldownUntil = 0
 
   // Record + transcribe
   const t0 = Date.now()
@@ -501,7 +827,7 @@ async function testMode() {
   let firstToken: number | null = null
   let response = ''
 
-  const tokens = streamGPT(text, text)
+  const tokens = streamGPT('triggered', getStructuredTranscript(), text, 'test mode')
   async function* timedTokens() {
     for await (const t of tokens) {
       if (!firstToken) { firstToken = Date.now(); process.stdout.write('\n[v3] AI: ') }
@@ -512,7 +838,6 @@ async function testMode() {
   }
 
   // Stream to TTS
-  const ttsStart = Date.now()
   const sentences = sentenceSplitter(timedTokens())
   const { audioUrl, firstChunkMs } = await streamTTS(sentences)
 

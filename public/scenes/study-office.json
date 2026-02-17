@@ -1,0 +1,39 @@
+{
+  "id": "study-office",
+  "name": "Cozy Study Office",
+  "room": { "width": 5, "depth": 4.5, "height": 3 },
+  "floor": { "color": "#5C4033" },
+  "walls": { "color": "#D8CCB8" },
+  "objects": [
+    { "assetId": "kenney:deskCorner", "position": [1.8, 0, -1.8], "rotation": [0, -90, 0] },
+    { "assetId": "kenney:chairDesk", "position": [0.8, 0, -1.5], "rotation": [0, 120, 0] },
+    { "assetId": "kenney:computerScreen", "position": [2.0, 0.76, -2.0] },
+    { "assetId": "kenney:computerKeyboard", "position": [1.8, 0.76, -1.6] },
+    { "assetId": "kenney:computerMouse", "position": [2.2, 0.76, -1.6] },
+    { "assetId": "kenney:lampSquareTable", "position": [2.3, 0.76, -2.2] },
+    { "assetId": "kenney:bookcaseClosedWide", "position": [-2.2, 0, -1.5], "rotation": [0, 90, 0] },
+    { "assetId": "kenney:bookcaseOpen", "position": [-2.2, 0, 0.2], "rotation": [0, 90, 0] },
+    { "assetId": "kenney:books", "position": [-2.2, 0.8, 0.2], "rotation": [0, 90, 0] },
+    { "assetId": "kenney:books", "position": [-2.2, 1.4, -1.5], "rotation": [0, 45, 0] },
+    { "assetId": "kenney:loungeChairRelax", "position": [-1.0, 0, 1.4], "rotation": [0, 30, 0] },
+    { "assetId": "kenney:sideTable", "position": [-0.2, 0, 1.7] },
+    { "assetId": "kenney:lampRoundTable", "position": [-0.2, 0.5, 1.7] },
+    { "assetId": "kenney:plantSmall2", "position": [2.3, 0.76, -1.3] },
+    { "assetId": "kenney:pottedPlant", "position": [-2.0, 0, 1.8] },
+    { "assetId": "kenney:rugRounded", "position": [0, 0.01, 0], "scale": 1.3, "tint": "#8B7355" },
+    { "assetId": "kenney:coatRackStanding", "position": [2.3, 0, 1.8] },
+    { "assetId": "kenney:speakerSmall", "position": [-2.2, 1.4, 0.2] },
+    { "assetId": "kenney:trashcan", "position": [2.3, 0, -0.8] }
+  ],
+  "lighting": {
+    "preset": "studio",
+    "overrides": [
+      { "type": "point", "position": [2.3, 1.2, -2.2], "intensity": 0.6, "color": "#FFE8C0" },
+      { "type": "point", "position": [-0.2, 1.2, 1.7], "intensity": 0.3, "color": "#FFD699" }
+    ]
+  },
+  "character": {
+    "spawnPosition": [0, 0, 0.3],
+    "walkBounds": { "minX": -1.2, "maxX": 1.2, "minZ": -0.5, "maxZ": 1.2 }
+  }
+}

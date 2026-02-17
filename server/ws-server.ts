@@ -53,6 +53,77 @@ const audioServer = createServer((req, res) => {
 
 let actualAudioPort = AUDIO_PORT
 
+// --- Bridge endpoint: POST /bridge/speak — push text to VRM for TTS + animation ---
+// Used by OpenClaw main session to bridge replies to VRM
+audioServer.on('request', (req: any, res: any) => {
+  // Already handled by createServer callback above for /audio/ routes
+})
+
+const bridgeServer = createServer(async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+  if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return }
+
+  // POST /bridge/speak — push a reply to VRM with TTS
+  if (req.method === 'POST' && req.url === '/bridge/speak') {
+    let body = ''
+    req.on('data', (chunk: string) => { body += chunk })
+    req.on('end', async () => {
+      try {
+        const { text, audio_device } = JSON.parse(body)
+        if (!text) { res.writeHead(400); res.end('Missing text'); return }
+
+        console.log(`[bridge] Speaking: "${text.slice(0, 80)}..." (audio_device: ${audio_device || 'all'})`)
+        const { action_id, expression, expression_weight } = pickAction(text)
+
+        try {
+          const audioUrl = await generateTTS(text)
+          const msg: any = { type: 'speak_audio', audio_url: audioUrl, text, action_id, expression, expression_weight }
+          if (audio_device) msg.audio_device = audio_device
+          const msgStr = JSON.stringify(msg)
+          for (const client of clients) {
+            if (client.readyState === WebSocket.OPEN) client.send(msgStr)
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, action_id, audio_url: audioUrl }))
+        } catch (e: any) {
+          // TTS failed — still send text with animation
+          const msg = JSON.stringify({ type: 'speak', text, action_id, expression, expression_weight })
+          for (const client of clients) {
+            if (client.readyState === WebSocket.OPEN) client.send(msg)
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, action_id, tts_error: e.message }))
+        }
+      } catch (e: any) {
+        res.writeHead(400)
+        res.end(e.message)
+      }
+    })
+    return
+  }
+
+  res.writeHead(404)
+  res.end('Not found')
+})
+
+const BRIDGE_PORT = config.server?.bridgePort || 8867
+
+bridgeServer.on('error', (err: any) => {
+  if (err.code === 'EADDRINUSE') {
+    console.log(`Bridge port ${BRIDGE_PORT} in use, trying ${BRIDGE_PORT + 1}...`)
+    bridgeServer.listen(BRIDGE_PORT + 1)
+  } else {
+    console.error('Bridge server error:', err)
+  }
+})
+
+bridgeServer.listen(BRIDGE_PORT, () => {
+  console.log(`Bridge HTTP server on http://localhost:${BRIDGE_PORT}`)
+})
+
 audioServer.on('error', (err: any) => {
   if (err.code === 'EADDRINUSE') {
     console.log(`Port ${actualAudioPort} in use, trying ${actualAudioPort + 1}...`)
@@ -197,8 +268,8 @@ async function askOpenClaw(userText: string): Promise<string> {
   }
 }
 
-async function handleUserSpeech(text: string, senderWs: WebSocket) {
-  console.log(`User said: "${text}"`)
+async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?: string) {
+  console.log(`User said: "${text}" (from device: ${sourceDevice || 'unknown'})`)
 
   // Get response from OpenClaw
   let response: string
@@ -214,23 +285,28 @@ async function handleUserSpeech(text: string, senderWs: WebSocket) {
   // Pick action based on response content
   const { action_id, expression, expression_weight } = pickAction(response)
 
+  // Determine audio target device — play audio only on the device that asked
+  const audioDevice = sourceDevice || undefined
+
   // Generate TTS
   try {
     const audioUrl = await generateTTS(response)
-    const audioMsg = JSON.stringify({
+    const audioMsg: any = {
       type: 'speak_audio',
       audio_url: audioUrl,
       text: response,
       action_id,
       expression,
       expression_weight,
-    })
+    }
+    if (audioDevice) audioMsg.audio_device = audioDevice
+    const audioMsgStr = JSON.stringify(audioMsg)
     for (const client of clients) {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(audioMsg)
+        client.send(audioMsgStr)
       }
     }
-    console.log(`TTS + action sent: ${action_id}, ${expression}`)
+    console.log(`TTS + action sent: ${action_id}, ${expression}, audio_device: ${audioDevice || 'all'}`)
   } catch (e: any) {
     console.error('TTS error, sending text-only:', e.message)
     // Fallback: send speak without audio
@@ -249,6 +325,83 @@ async function handleUserSpeech(text: string, senderWs: WebSocket) {
   }
 }
 
+/**
+ * Handle meeting speech — routes through OpenClaw Gateway HTTP API (streaming).
+ * Uses x-openclaw-session-key to maintain a persistent meeting session with full context.
+ */
+async function handleMeetingSpeech(prompt: string, senderWs: WebSocket) {
+  console.log(`[meeting] Sending to OpenClaw Gateway API (streaming)...`)
+  const startTime = Date.now()
+
+  let response = ''
+  try {
+    const resp = await fetch(`http://127.0.0.1:${GATEWAY_PORT}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+        'x-openclaw-agent-id': 'main',
+        'x-openclaw-session-key': 'meeting-avatar',
+      },
+      body: JSON.stringify({
+        model: 'openclaw',
+        stream: false,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    })
+    if (!resp.ok) throw new Error(`Gateway returned ${resp.status}: ${await resp.text()}`)
+    
+    const data = await resp.json() as any
+    response = data?.choices?.[0]?.message?.content || ''
+    
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+    console.log(`[meeting] Gateway response in ${elapsed}s: "${response.slice(0, 100)}..."`)
+
+    // Clean up — skip NO_REPLY or HEARTBEAT_OK
+    if (!response || response.includes('NO_REPLY') || response.includes('HEARTBEAT_OK')) {
+      console.log('[meeting] No actionable response')
+      return
+    }
+  } catch (e: any) {
+    console.error('[meeting] Gateway API error:', e.message?.slice(0, 200))
+    return
+  }
+
+  if (!response || response.length < 2) {
+    console.log('[meeting] Empty response, skipping')
+    return
+  }
+
+  console.log(`[meeting] Response: "${response.slice(0, 100)}..."`)
+
+  const { action_id, expression, expression_weight } = pickAction(response)
+
+  try {
+    const audioUrl = await generateTTS(response)
+    const audioMsg = JSON.stringify({
+      type: 'speak_audio',
+      audio_url: audioUrl,
+      text: response,
+      action_id,
+      expression,
+      expression_weight,
+      audio_device: 'meeting',  // Meeting audio plays on meeting/web device (OBS captures it)
+    })
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(audioMsg)
+      }
+    }
+    console.log(`[meeting] TTS broadcast: ${action_id}, ${expression}`)
+  } catch (e: any) {
+    console.error('[meeting] TTS error:', e.message)
+    const fallback = JSON.stringify({ type: 'speak', text: response, action_id, expression, expression_weight })
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) client.send(fallback)
+    }
+  }
+}
+
 // --- Multi-device registry ---
 interface DeviceInfo {
   ws: WebSocket
@@ -262,6 +415,13 @@ function getDeviceList(): Array<{deviceId: string, deviceType: string, name: str
   return Array.from(devices.values()).map(d => ({
     deviceId: d.deviceId, deviceType: d.deviceType, name: d.name
   }))
+}
+
+function findDeviceIdByWs(targetWs: WebSocket): string | undefined {
+  for (const [id, info] of devices) {
+    if (info.ws === targetWs) return id
+  }
+  return undefined
 }
 
 function broadcastDeviceList() {
@@ -588,12 +748,31 @@ wss.on('connection', (ws) => {
       return
     }
 
+    // Relay speak_audio from meeting bridge (or any client) to all OTHER clients
+    if (parsed?.type === 'speak_audio' && parsed.audio_url) {
+      console.log(`[relay] speak_audio: "${(parsed.text || '').slice(0, 60)}..."`)
+      const raw = typeof data === 'string' ? data : data.toString()
+      for (const client of clients) {
+        if (client !== ws && client.readyState === WebSocket.OPEN) {
+          client.send(raw)
+        }
+      }
+      return
+    }
+
     // Handle meeting_speech — transcribed audio from virtual meeting bridge
+    // Routes through OpenClaw MAIN session (full context: MEMORY.md, SOUL.md, project knowledge)
     if (parsed?.type === 'meeting_speech' && parsed.text) {
-      console.log(`[meeting] Heard: "${parsed.text}"`)
-      // Prefix with meeting context so AI knows this is from a meeting
-      const meetingPrompt = `[Meeting Audio] A participant said: "${parsed.text}"\n\nIf this seems directed at you or relevant, respond naturally. If it's just background conversation, you can acknowledge briefly or stay quiet.`
-      handleUserSpeech(meetingPrompt, ws).catch(e => {
+      const transcript = parsed.transcript || ''
+      const reason = parsed.reason || 'triggered'
+      const mode = parsed.mode || 'triggered'
+      console.log(`[meeting] ${mode}: "${parsed.text.slice(0, 80)}..." (${reason})`)
+      
+      const meetingPrompt = mode === 'proactive'
+        ? `[MEETING MODE — Proactive] You are currently in a live Google Meet meeting as a virtual avatar. There's been a pause. Based on the transcript, share a brief insight or ask a question. Be concise (1-2 sentences). If nothing to add, just say one short sentence acknowledging the pause.\n\n[Meeting Transcript]\n${transcript}\n\n[Respond in the same language as the meeting.]`
+        : `[MEETING MODE — Triggered] You are currently in a live Google Meet meeting as a virtual avatar. Someone just spoke and it's directed at you or relevant. Respond naturally using your full knowledge.\n\n[Meeting Transcript]\n${transcript}\n\n[Latest speech] "${parsed.text}"\n[Trigger reason] ${reason}\n\n[IMPORTANT: Keep response concise (2-4 sentences). Use the same language as the speaker. Reference your knowledge of the Clawatar project, your capabilities, development timeline, etc. when relevant.]`
+      
+      handleMeetingSpeech(meetingPrompt, ws).catch(e => {
         console.error('Meeting speech handling error:', e.message)
       })
       return
@@ -613,7 +792,9 @@ wss.on('connection', (ws) => {
         return
       }
 
-      handleUserSpeech(parsed.text, ws).catch(e => {
+      // Pass source_device for focus-based audio routing
+      const sourceDevice = parsed.source_device || findDeviceIdByWs(ws)
+      handleUserSpeech(parsed.text, ws, sourceDevice).catch(e => {
         console.error('User speech handling error:', e.message)
         ws.send(JSON.stringify({ type: 'tts_error', message: e.message }))
       })

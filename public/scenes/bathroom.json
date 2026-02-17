@@ -1,0 +1,30 @@
+{
+  "id": "bathroom",
+  "name": "Clean Bathroom",
+  "room": { "width": 3.5, "depth": 3.5, "height": 2.8 },
+  "floor": { "color": "#E0DAD4" },
+  "walls": { "color": "#EEF2F0" },
+  "objects": [
+    { "assetId": "kenney:bathtub", "position": [-1.2, 0, -1.2], "rotation": [0, 0, 0] },
+    { "assetId": "kenney:showerRound", "position": [1.2, 0, -1.2] },
+    { "assetId": "kenney:toilet", "position": [1.2, 0, 0.5], "rotation": [0, -90, 0] },
+    { "assetId": "kenney:bathroomSink", "position": [-1.2, 0, 0.8], "rotation": [0, 90, 0] },
+    { "assetId": "kenney:bathroomMirror", "position": [-1.5, 1.2, 0.8], "rotation": [0, 90, 0] },
+    { "assetId": "kenney:bathroomCabinetDrawer", "position": [-1.2, 0, 1.4], "rotation": [0, 90, 0] },
+    { "assetId": "kenney:washerDryerStacked", "position": [1.2, 0, 1.2], "rotation": [0, -90, 0] },
+    { "assetId": "kenney:rugDoormat", "position": [0, 0.01, 0], "scale": 1.0, "tint": "#B8D0D8" },
+    { "assetId": "kenney:plantSmall3", "position": [-1.2, 0.76, 1.4] },
+    { "assetId": "kenney:trashcan", "position": [0.5, 0, 1.4] }
+  ],
+  "lighting": {
+    "preset": "bright",
+    "overrides": [
+      { "type": "point", "position": [0, 2.4, 0], "intensity": 0.7, "color": "#F0F5FF" },
+      { "type": "point", "position": [-1.2, 1.5, 0.8], "intensity": 0.25, "color": "#D8E8F5" }
+    ]
+  },
+  "character": {
+    "spawnPosition": [0, 0, 0],
+    "walkBounds": { "minX": -0.5, "maxX": 0.5, "minZ": -0.5, "maxZ": 0.8 }
+  }
+}

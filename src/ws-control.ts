@@ -1,6 +1,7 @@
+import { handleSceneCommand } from './scene-system'
 import type { WSCommand } from './types'
 import { loadVRM } from './vrm-loader'
-import { loadAndPlay } from './animation'
+import { loadAndPlay, setCrossfadeScale } from './animation'
 import { setExpression, resetExpressions } from './expressions'
 import { triggerSpeak } from './lip-sync'
 import { setLookAtTarget } from './look-at'
@@ -13,6 +14,12 @@ import { initChatUI } from './chat-ui'
 
 let ws: WebSocket | null = null
 let reconnectTimer: number | null = null
+
+// This device's ID — used for focus-based audio routing
+const WEB_DEVICE_ID = `web-${crypto.randomUUID().slice(0, 8)}`
+const isEmbedMode = new URLSearchParams(window.location.search).has('embed')
+const isMeetingMode = new URLSearchParams(window.location.search).has('meeting')
+const WEB_DEVICE_TYPE = isMeetingMode ? 'meeting' : isEmbedMode ? 'ios-embed' : 'web'
 
 function updateStatus(connected: boolean) {
   const dot = document.getElementById('ws-dot')
@@ -76,7 +83,18 @@ async function handleCommand(cmd: any) {
             if (!actionId && emotion.animation) actionId = emotion.animation
           }
         }
-        await requestSpeakAudio(cmd.audio_url, actionId, expression, expressionWeight)
+        // Focus-based audio: only play audio if this device is the target (or no target specified)
+        const shouldPlayAudio = !cmd.audio_device || cmd.audio_device === WEB_DEVICE_ID || cmd.audio_device === WEB_DEVICE_TYPE
+        if (shouldPlayAudio) {
+          await requestSpeakAudio(cmd.audio_url, actionId, expression, expressionWeight)
+        } else {
+          // Still show animation + expression, just no audio
+          await requestAction(actionId || '86_Talking')
+          if (expression) {
+            const { setExpression } = await import('./expressions')
+            setExpression(expression, expressionWeight ?? 0.8)
+          }
+        }
         break
       }
       case 'user_typing':
@@ -126,6 +144,16 @@ async function handleCommand(cmd: any) {
       case 'set_activity_mode':
         import('./activity-modes').then(m => m.setActivityMode(cmd.mode ?? 'free'))
         break
+      case 'set_crossfade_scale':
+        if (typeof cmd.scale === 'number') setCrossfadeScale(cmd.scale)
+        break
+      case 'load_scene':
+      case 'load_room':
+      case 'list_scenes':
+      case 'unload_scene':
+      case 'list_assets':
+        handleSceneCommand(cmd)
+        break
     }
     // Send ack for commands, but NOT for status messages (prevents broadcast loops)
     if (cmd.type !== 'speak_audio' && cmd.type !== 'tts_error' && !cmd.status) {
@@ -137,15 +165,15 @@ async function handleCommand(cmd: any) {
 }
 
 export function initChatAndVoice() {
-  // Init chat UI - sends user text through WS
+  // Init chat UI - sends user text through WS with device ID for focus routing
   initChatUI((text: string) => {
-    sendWS({ type: 'user_speech', text })
+    sendWS({ type: 'user_speech', text, source_device: WEB_DEVICE_ID })
   })
 
   // Init voice input - sends transcribed speech through WS
   initVoiceInput((text: string) => {
     addMessage('user', text)
-    sendWS({ type: 'user_speech', text })
+    sendWS({ type: 'user_speech', text, source_device: WEB_DEVICE_ID })
   })
 
   // Mic button
@@ -166,6 +194,8 @@ export function connectWS(port = 8765) {
   ws.onopen = () => {
     updateStatus(true)
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+    // Register this device for focus-based audio routing
+    sendWS({ type: 'register_device', deviceId: WEB_DEVICE_ID, deviceType: WEB_DEVICE_TYPE, name: WEB_DEVICE_TYPE === 'meeting' ? 'Meeting OBS' : WEB_DEVICE_TYPE === 'ios-embed' ? 'iOS Embed' : 'Web Browser' })
   }
 
   ws.onmessage = (e) => {
