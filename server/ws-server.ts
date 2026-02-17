@@ -181,6 +181,216 @@ function pruneCache() {
   } catch {}
 }
 
+// --- Streaming Gateway + TTS Pipeline ---
+
+/**
+ * Quick acknowledgment phrases — played immediately while Gateway processes tools.
+ * Gives instant feedback so user doesn't wait 5-15s in silence.
+ */
+const ACK_PHRASES_ZH = [
+  '让我看看～', '我查一下哦～', '稍等一下～', '嗯，让我想想…', '好的，等我一下～',
+]
+const ACK_PHRASES_EN = [
+  "Let me check~", "One sec~", "Hmm, let me look...", "Sure, give me a moment~",
+]
+
+function pickAckPhrase(text: string): string {
+  const isChinese = /[\u4e00-\u9fff]/.test(text)
+  const phrases = isChinese ? ACK_PHRASES_ZH : ACK_PHRASES_EN
+  return phrases[Math.floor(Math.random() * phrases.length)]
+}
+
+/**
+ * Stream tokens from OpenClaw Gateway (SSE).
+ * Yields individual content tokens as they arrive.
+ */
+async function* streamFromGateway(
+  messages: Array<{ role: string; content: string }>,
+  sessionKey: string = 'vrm-chat',
+): AsyncGenerator<string> {
+  const resp = await fetch(`http://127.0.0.1:${GATEWAY_PORT}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+      'x-openclaw-agent-id': 'main',
+      'x-openclaw-session-key': sessionKey,
+    },
+    body: JSON.stringify({ model: 'openclaw', stream: true, messages }),
+  })
+  if (!resp.ok) throw new Error(`Gateway ${resp.status}: ${await resp.text()}`)
+
+  const reader = resp.body!.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop() || ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ') || line === 'data: [DONE]') continue
+      try {
+        const json = JSON.parse(line.slice(6))
+        const token = json.choices?.[0]?.delta?.content
+        if (token) yield token
+      } catch {}
+    }
+  }
+}
+
+/**
+ * Split streaming tokens into complete sentences for TTS.
+ */
+async function* sentenceSplitter(tokens: AsyncGenerator<string>): AsyncGenerator<string> {
+  let buffer = ''
+  const enders = /[。！？.!?\n]/
+
+  for await (const token of tokens) {
+    buffer += token
+    const match = buffer.match(enders)
+    if (match && match.index !== undefined) {
+      const idx = match.index + 1
+      const sentence = buffer.slice(0, idx).trim()
+      buffer = buffer.slice(idx)
+      if (sentence) yield sentence + ' '
+    }
+  }
+  if (buffer.trim()) yield buffer.trim()
+}
+
+/**
+ * Streaming TTS: feeds sentence chunks to ElevenLabs WebSocket API,
+ * collects MP3 audio, saves to cache, returns URL.
+ * Starts generating audio as soon as the first sentence arrives.
+ */
+async function streamingTTS(sentences: AsyncIterable<string>): Promise<{ audioUrl: string; firstChunkMs: number }> {
+  if (!API_KEY) throw new Error('No ElevenLabs API key')
+
+  return new Promise(async (resolve, reject) => {
+    const audioBuffers: Buffer[] = []
+    let firstChunkTime: number | null = null
+    const startTime = Date.now()
+    let resolved = false
+
+    const wsUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream-input?model_id=${MODEL_ID}&output_format=mp3_44100_128`
+    const elWs = new WebSocket(wsUrl)
+
+    elWs.on('open', async () => {
+      // Initial handshake
+      elWs.send(JSON.stringify({
+        text: ' ',
+        voice_settings: { stability: 0.45, similarity_boost: 0.75 },
+        xi_api_key: API_KEY,
+      }))
+
+      // Feed sentences as they arrive from AI
+      for await (const sentence of sentences) {
+        if (elWs.readyState === WebSocket.OPEN) {
+          elWs.send(JSON.stringify({ text: sentence }))
+        }
+      }
+
+      // Signal end of text
+      if (elWs.readyState === WebSocket.OPEN) {
+        elWs.send(JSON.stringify({ text: '' }))
+      }
+    })
+
+    elWs.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString())
+        if (msg.audio) {
+          const buf = Buffer.from(msg.audio, 'base64')
+          audioBuffers.push(buf)
+          if (!firstChunkTime) {
+            firstChunkTime = Date.now()
+            console.log(`[streaming-tts] First audio chunk: ${firstChunkTime - startTime}ms`)
+          }
+        }
+        if (msg.isFinal) elWs.close()
+      } catch {}
+    })
+
+    elWs.on('close', () => {
+      if (resolved) return
+      resolved = true
+      if (audioBuffers.length === 0) { reject(new Error('No audio from ElevenLabs')); return }
+      const combined = Buffer.concat(audioBuffers)
+      const fileName = `${randomUUID()}.mp3`
+      writeFileSync(join(AUDIO_CACHE_DIR, fileName), combined)
+      pruneCache()
+      const audioUrl = `http://localhost:${actualAudioPort}/audio/${fileName}`
+      resolve({ audioUrl, firstChunkMs: (firstChunkTime || Date.now()) - startTime })
+    })
+
+    elWs.on('error', (err) => { if (!resolved) { resolved = true; reject(err) } })
+  })
+}
+
+/**
+ * Full streaming pipeline with instant acknowledgment.
+ * 
+ * If Gateway takes >ACK_THRESHOLD_MS to produce the first token,
+ * we immediately TTS a short ack phrase ("让我看看～") and broadcast it,
+ * then stream the real response as a second audio message.
+ * 
+ * This eliminates the 5-15s dead silence when tools are executing.
+ */
+const ACK_THRESHOLD_MS = 2000
+
+async function streamingPipeline(
+  messages: Array<{ role: string; content: string }>,
+  sessionKey: string = 'vrm-chat',
+  opts?: { broadcastAck?: (audioUrl: string, text: string) => void; inputText?: string },
+): Promise<{ text: string; audioUrl: string; firstChunkMs: number; ackSent: boolean }> {
+  let fullText = ''
+  let ackSent = false
+
+  // Race: first token vs ack timeout
+  const tokenIterator = streamFromGateway(messages, sessionKey)
+  const firstResult = await Promise.race([
+    tokenIterator.next(),
+    new Promise<'timeout'>(r => setTimeout(() => r('timeout'), ACK_THRESHOLD_MS)),
+  ])
+
+  if (firstResult === 'timeout' && opts?.broadcastAck) {
+    // Gateway is slow (likely tool call) — send ack immediately
+    const ackText = pickAckPhrase(opts.inputText || '')
+    try {
+      const ackAudioUrl = await generateTTS(ackText)
+      opts.broadcastAck(ackAudioUrl, ackText)
+      ackSent = true
+      console.log(`[streaming] Ack sent: "${ackText}"`)
+    } catch (e: any) {
+      console.error(`[streaming] Ack TTS failed: ${e.message}`)
+    }
+  }
+
+  // Now collect all tokens (including the first if we got it from the race)
+  async function* allTokens() {
+    if (firstResult !== 'timeout') {
+      const r = firstResult as IteratorResult<string>
+      if (!r.done && r.value) {
+        fullText += r.value
+        yield r.value
+      }
+      if (r.done) return
+    }
+    for await (const token of tokenIterator) {
+      fullText += token
+      yield token
+    }
+  }
+
+  const sentences = sentenceSplitter(allTokens())
+  const { audioUrl, firstChunkMs } = await streamingTTS(sentences)
+
+  return { text: fullText.trim(), audioUrl, firstChunkMs, ackSent }
+}
+
 // --- OpenClaw Agent Integration ---
 const GATEWAY_PORT = config.openclaw?.gatewayPort || 18789
 const GATEWAY_TOKEN = (() => {
@@ -270,56 +480,63 @@ async function askOpenClaw(userText: string): Promise<string> {
 
 async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?: string) {
   console.log(`User said: "${text}" (from device: ${sourceDevice || 'unknown'})`)
-
-  // Get response from OpenClaw
-  let response: string
-  try {
-    response = await askOpenClaw(text)
-  } catch (e: any) {
-    console.error('OpenClaw error:', e.message)
-    response = "Sorry, I'm having trouble connecting to my brain right now."
-  }
-
-  console.log(`Avatar responds: "${response}"`)
-
-  // Pick action based on response content
-  const { action_id, expression, expression_weight } = pickAction(response)
-
-  // Determine audio target device — play audio only on the device that asked
+  const startTime = Date.now()
   const audioDevice = sourceDevice || undefined
 
-  // Generate TTS
   try {
-    const audioUrl = await generateTTS(response)
-    const audioMsg: any = {
-      type: 'speak_audio',
-      audio_url: audioUrl,
-      text: response,
-      action_id,
-      expression,
-      expression_weight,
+    // Ack callback: broadcasts a quick acknowledgment if Gateway is slow (tool calls)
+    const broadcastAck = (ackAudioUrl: string, ackText: string) => {
+      const ackMsg: any = {
+        type: 'speak_audio', audio_url: ackAudioUrl, text: ackText,
+        action_id: '88_Thinking', expression: 'neutral', expression_weight: 0.5,
+      }
+      if (audioDevice) ackMsg.audio_device = audioDevice
+      const ackMsgStr = JSON.stringify(ackMsg)
+      for (const client of clients) {
+        if (client.readyState === WebSocket.OPEN) client.send(ackMsgStr)
+      }
     }
+
+    // Full streaming pipeline with instant ack
+    const { text: response, audioUrl, firstChunkMs, ackSent } = await streamingPipeline(
+      [{ role: 'user', content: text }],
+      'vrm-chat',
+      { broadcastAck, inputText: text },
+    )
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+    console.log(`[streaming] Response in ${elapsed}s (TTS first chunk: ${firstChunkMs}ms, ack: ${ackSent}): "${response.slice(0, 80)}..."`)
+
+    if (!response || response.includes('NO_REPLY') || response.includes('HEARTBEAT_OK')) {
+      console.log('[streaming] No actionable response')
+      return
+    }
+
+    const { action_id, expression, expression_weight } = pickAction(response)
+    const audioMsg: any = { type: 'speak_audio', audio_url: audioUrl, text: response, action_id, expression, expression_weight }
     if (audioDevice) audioMsg.audio_device = audioDevice
     const audioMsgStr = JSON.stringify(audioMsg)
     for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(audioMsgStr)
-      }
+      if (client.readyState === WebSocket.OPEN) client.send(audioMsgStr)
     }
-    console.log(`TTS + action sent: ${action_id}, ${expression}, audio_device: ${audioDevice || 'all'}`)
+    console.log(`[streaming] Broadcast: ${action_id}, ${expression}, device: ${audioDevice || 'all'}`)
   } catch (e: any) {
-    console.error('TTS error, sending text-only:', e.message)
-    // Fallback: send speak without audio
-    const fallbackMsg = JSON.stringify({
-      type: 'speak',
-      text: response,
-      action_id,
-      expression,
-      expression_weight,
-    })
-    for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(fallbackMsg)
+    console.error('[streaming] Pipeline error:', e.message)
+    // Fallback: non-streaming
+    try {
+      const response = await askOpenClaw(text)
+      const { action_id, expression, expression_weight } = pickAction(response)
+      const audioUrl = await generateTTS(response)
+      const audioMsg: any = { type: 'speak_audio', audio_url: audioUrl, text: response, action_id, expression, expression_weight }
+      if (audioDevice) audioMsg.audio_device = audioDevice
+      for (const client of clients) {
+        if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(audioMsg))
+      }
+    } catch (fallbackErr: any) {
+      console.error('[streaming] Fallback also failed:', fallbackErr.message)
+      const fallbackMsg = JSON.stringify({ type: 'speak', text: "Sorry, I'm having trouble right now.", action_id: '88_Thinking', expression: 'neutral', expression_weight: 0.5 })
+      for (const client of clients) {
+        if (client.readyState === WebSocket.OPEN) client.send(fallbackMsg)
       }
     }
   }
@@ -330,75 +547,46 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
  * Uses x-openclaw-session-key to maintain a persistent meeting session with full context.
  */
 async function handleMeetingSpeech(prompt: string, senderWs: WebSocket) {
-  console.log(`[meeting] Sending to OpenClaw Gateway API (streaming)...`)
+  console.log(`[meeting] Streaming pipeline...`)
   const startTime = Date.now()
 
-  let response = ''
   try {
-    const resp = await fetch(`http://127.0.0.1:${GATEWAY_PORT}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GATEWAY_TOKEN}`,
-        'x-openclaw-agent-id': 'main',
-        'x-openclaw-session-key': 'meeting-avatar',
-      },
-      body: JSON.stringify({
-        model: 'openclaw',
-        stream: false,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    })
-    if (!resp.ok) throw new Error(`Gateway returned ${resp.status}: ${await resp.text()}`)
-    
-    const data = await resp.json() as any
-    response = data?.choices?.[0]?.message?.content || ''
-    
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-    console.log(`[meeting] Gateway response in ${elapsed}s: "${response.slice(0, 100)}..."`)
+    const broadcastAck = (ackAudioUrl: string, ackText: string) => {
+      const ackMsg = JSON.stringify({
+        type: 'speak_audio', audio_url: ackAudioUrl, text: ackText,
+        action_id: '88_Thinking', expression: 'neutral', expression_weight: 0.5,
+        audio_device: 'meeting',
+      })
+      for (const client of clients) {
+        if (client.readyState === WebSocket.OPEN) client.send(ackMsg)
+      }
+    }
 
-    // Clean up — skip NO_REPLY or HEARTBEAT_OK
-    if (!response || response.includes('NO_REPLY') || response.includes('HEARTBEAT_OK')) {
+    const { text: response, audioUrl, firstChunkMs, ackSent } = await streamingPipeline(
+      [{ role: 'user', content: prompt }],
+      'meeting-avatar',
+      { broadcastAck, inputText: prompt },
+    )
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+    console.log(`[meeting] Done in ${elapsed}s (TTS first chunk: ${firstChunkMs}ms, ack: ${ackSent}): "${response.slice(0, 100)}..."`)
+
+    if (!response || response.length < 2 || response.includes('NO_REPLY') || response.includes('HEARTBEAT_OK')) {
       console.log('[meeting] No actionable response')
       return
     }
-  } catch (e: any) {
-    console.error('[meeting] Gateway API error:', e.message?.slice(0, 200))
-    return
-  }
 
-  if (!response || response.length < 2) {
-    console.log('[meeting] Empty response, skipping')
-    return
-  }
-
-  console.log(`[meeting] Response: "${response.slice(0, 100)}..."`)
-
-  const { action_id, expression, expression_weight } = pickAction(response)
-
-  try {
-    const audioUrl = await generateTTS(response)
+    const { action_id, expression, expression_weight } = pickAction(response)
     const audioMsg = JSON.stringify({
-      type: 'speak_audio',
-      audio_url: audioUrl,
-      text: response,
-      action_id,
-      expression,
-      expression_weight,
-      audio_device: 'meeting',  // Meeting audio plays on meeting/web device (OBS captures it)
+      type: 'speak_audio', audio_url: audioUrl, text: response,
+      action_id, expression, expression_weight, audio_device: 'meeting',
     })
     for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(audioMsg)
-      }
+      if (client.readyState === WebSocket.OPEN) client.send(audioMsg)
     }
-    console.log(`[meeting] TTS broadcast: ${action_id}, ${expression}`)
+    console.log(`[meeting] Broadcast: ${action_id}, ${expression}`)
   } catch (e: any) {
-    console.error('[meeting] TTS error:', e.message)
-    const fallback = JSON.stringify({ type: 'speak', text: response, action_id, expression, expression_weight })
-    for (const client of clients) {
-      if (client.readyState === WebSocket.OPEN) client.send(fallback)
-    }
+    console.error('[meeting] Streaming pipeline error:', e.message)
   }
 }
 
