@@ -59,9 +59,10 @@ Open `http://localhost:3000` and drop your `.vrm` model onto the page.
 
 ### 📹 Virtual Meeting Avatar
 - **Join Google Meet / Zoom** — avatar appears via OBS Virtual Camera
-- **Listen & respond** — captures meeting audio via BlackHole → Whisper STT → AI → TTS
+- **Listen & respond** — captures meeting audio via BlackHole → Whisper STT → OpenClaw AI → TTS
 - **Smart triggers** — responds when called by name or asked a question
-- **Streaming pipeline (v3)** — VAD + streaming GPT-4o + streaming ElevenLabs TTS, ~2.6s latency
+- **Streaming pipeline (v3)** — VAD + OpenClaw orchestrated model + streaming ElevenLabs TTS
+- **No direct LLM calls** — all AI routes through OpenClaw Gateway (model selection, context, persona handled automatically)
 - **Rolling context** — maintains 2-minute transcript window for coherent responses
 
 ### 🔌 Developer-Friendly
@@ -115,8 +116,15 @@ Browser (localhost:3000)
     ▼
 WS Server (server/ws-server.ts)
 ├── Command relay & routing
-├── ElevenLabs TTS (optional)
-└── OpenClaw agent bridge (optional)
+├── ElevenLabs TTS
+├── OpenClaw Gateway bridge (all AI routing)
+└── Meeting speech → Gateway API → orchestrated model
+    │
+    ▼
+OpenClaw Gateway (localhost:18789)
+├── Model orchestration (Opus/Sonnet/Codex)
+├── Session & context management
+└── Persona & memory
 ```
 
 ## OpenClaw Skill

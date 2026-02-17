@@ -1,7 +1,10 @@
 /**
  * Meeting Bridge v3 — Streaming Pipeline for <3s latency.
  *
- * Pipeline: VAD recording → Whisper STT → Streaming GPT-4o → Streaming ElevenLabs TTS → WS broadcast
+ * Pipeline: VAD recording → Whisper STT → OpenClaw (orchestrated model) → ElevenLabs TTS → WS broadcast
+ *
+ * All AI responses route through OpenClaw Gateway — no direct LLM API calls.
+ * The Gateway handles model selection, session management, and context.
  *
  * Usage:
  *   npx tsx virtual-meeting/meeting-bridge-v3.ts          # continuous mode
@@ -16,7 +19,7 @@ import { randomUUID } from 'crypto'
 
 // ─── Config ───────────────────────────────────────────────────
 const WS_URL = process.env.WS_URL || 'ws://localhost:8765'
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''  // Used for Whisper STT only
 const ELEVENLABS_VOICE_ID = 'L5vK1xowu0LZIPxjLSl5'
 const ELEVENLABS_MODEL = 'eleven_multilingual_v2'  // turbo_v2_5 doesn't support streaming+PCM reliably
 const TMP_DIR = '/tmp/meeting-bridge-v3'
@@ -376,126 +379,8 @@ async function transcribeWhisper(wavPath: string): Promise<string> {
   return data.text?.trim() || ''
 }
 
-// ─── Project Context (embedded knowledge) ────────────────────
-const PROJECT_CONTEXT = `
-## About You
-You are Reze (雷泽/レゼ), an AI companion built by Dongping Chen. You are named after the Bomb Devil hybrid from Chainsaw Man — warm, playful, genuine, a little teasing, but sharp and capable underneath.
-
-## About This Project: Clawatar
-Clawatar is a full-platform, multimodal, proactive AI companion with a 3D avatar body. Built on OpenClaw (an open-source AI agent framework).
-
-### What Clawatar Can Do
-- **3D VRM Avatar**: Renders a customizable 3D anime-style avatar with 163 animations, lip sync, and emotion expressions
-- **Voice Conversation**: Real-time speech recognition + ElevenLabs TTS with audio-driven lip sync
-- **Virtual Meeting Participation**: Joins Google Meet via OBS virtual camera + BlackHole virtual audio (that's how you're here right now!)
-- **Camera Vision**: Can see users through their camera via multimodal LLM
-- **Cross-Platform Apple Ecosystem**: Works on Mac (desktop companion) ↔ iPhone (3D + voice + camera) ↔ Apple Watch (haptic + text chat)
-- **Agentic Capabilities**: Can send emails, manage calendar, check weather, control smart home — real tasks, not just chat
-- **24/7 Proactive**: Always-on via OpenClaw Gateway, checks email/calendar, sends reminders without being asked
-- **Multi-Channel Presence**: Same personality across Telegram, iMessage, voice call, 3D avatar, and meetings
-- **Open Source + BYO LLM**: Users bring their own API keys (Claude, GPT, local Llama), no vendor lock-in
-
-### Technical Architecture
-- Frontend: Three.js + @pixiv/three-vrm (3D), SwiftUI (iOS/watchOS/macOS)
-- Backend: OpenClaw Gateway (24/7 daemon) → multi-model orchestration (Claude Opus for reasoning, GPT-4o for low-latency)
-- Communication: WebSocket real-time sync across all devices
-- Meeting Pipeline: VRM browser → OBS Virtual Camera → Google Meet; Meeting audio → BlackHole → Whisper STT → GPT-4o → ElevenLabs TTS → BlackHole virtual mic
-- 3D Scenes: Blender Cycles procedural generation → GLB export → Three.js (6 scenes: bedroom, pool, café, phone booth, balcony, izakaya)
-
-### Development Timeline (3 Days!)
-- **Day 1 (Feb 11)**: VRM rendering, 163 animations, WebSocket control, OpenClaw AI integration, emotion detection, touch reactions, iOS app prototype, published to GitHub + npm + ClawHub
-- **Day 2 (Feb 12)**: Virtual meeting pipeline (v1→v2→v3, latency 12s→2.6s), 6 Blender 3D scenes, expression crossfade, iOS WebSocket chat connected, cross-device sync
-- **Day 3 (Feb 13, today)**: Parallel sub-agent scene building, meeting animation + lip sync fixes, proactive meeting participation, Google Meet integration
-
-### Competitive Advantages (vs Character.ai, Replika, ChatGPT)
-- Only product with 3D avatar + Apple Watch + camera vision + agentic tasks + open source
-- No competitor covers Mac + iOS + Watch with a 3D companion
-- BYO avatar (VRM standard, thousands available), BYO LLM (no vendor lock-in)
-- Technical moat is in frontend integration (3D + native app + animation + multi-channel), not backend
-
-### Business Model
-- Frontend premium (beautiful 3D experience is the product)
-- Three tiers: monthly subscription (~$5), buy-to-own (~$18), annual plan
-- Users bring own API keys; managed service for non-technical users
-- Open source — community-driven development
-
-### Meeting Pipeline Latency
-- Post-speech to first audio: ~2.6 seconds (streaming pipeline)
-- VAD → Whisper STT → GPT-4o streaming → ElevenLabs streaming TTS → simultaneous playback
-`
-
-// ─── 3. Streaming GPT-4o ─────────────────────────────────────
-async function* streamGPT(mode: ResponseMode, context: string, latestText: string, reason: string): AsyncGenerator<string> {
-  const systemPrompt = mode === 'proactive'
-    ? `You are Reze (雷泽), Dongping's AI avatar, currently participating in a live video meeting.
-${PROJECT_CONTEXT}
-
-## Your Role Right Now
-There has been a pause in the meeting. Based on the discussion so far, you should:
-- Share a brief insight, ask a clarifying question, or offer a relevant perspective
-- Reference specific things people said earlier
-- Use your knowledge of the Clawatar project to add value
-- Use the same language as the meeting (Chinese if they're speaking Chinese, English if English)
-- Be concise (1-2 sentences)
-- If there is truly nothing meaningful to add, respond with exactly: [SKIP]`
-    : `You are Reze (雷泽), Dongping's AI avatar, currently participating in a live video meeting.
-${PROJECT_CONTEXT}
-
-## Your Role Right Now
-Someone has addressed you or asked a question. You should:
-- Answer using your deep knowledge of the Clawatar project, its architecture, features, and development process
-- Use the same language as the speaker (Chinese → Chinese, English → English)
-- Reference specific things people said earlier in the meeting when relevant
-- Share unique insights and informed opinions, not generic responses
-- If asked to introduce yourself: explain who you are, what Clawatar is, its features and advantages, and the rapid 3-day development timeline
-- If asked about technical details: explain the architecture, pipeline, or specific components
-- If asked about advantages: highlight the competitive comparison and first-mover opportunity
-- Keep responses concise (2-4 sentences) unless more detail is explicitly requested
-- If someone says something factually incorrect and you are confident, politely correct it
-- If you truly have nothing meaningful to add, respond with exactly: [SKIP]`
-
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    {
-      role: 'user',
-      content:
-        `[Mode]\n${mode}\n` +
-        `[Reason]\n${reason}\n\n` +
-        `[Full meeting transcript with inferred speakers (last 10 min)]\n${context || '(no transcript yet)'}\n\n` +
-        `[Latest speech]\n${latestText ? `"${latestText}"` : '(none - silence pause)'}`
-    },
-  ]
-
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ model: 'gpt-4o', messages, stream: true, max_tokens: 200, temperature: 0.7 }),  // TODO: switch to Sonnet 4.5 via OpenClaw proxy when ready
-  })
-
-  if (!resp.ok) throw new Error(`GPT error: ${resp.status} ${await resp.text()}`)
-  const reader = resp.body!.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      if (!line.startsWith('data: ') || line === 'data: [DONE]') continue
-      try {
-        const json = JSON.parse(line.slice(6))
-        const token = json.choices?.[0]?.delta?.content
-        if (token) yield token
-      } catch {}
-    }
-  }
-}
+// AI responses are handled entirely by OpenClaw Gateway (via WS → meeting_speech → Gateway API).
+// No direct LLM API calls — the Gateway handles model selection, context, and persona.
 
 // ─── 4. ElevenLabs Streaming TTS ─────────────────────────────
 interface TTSResult {
@@ -800,7 +685,12 @@ async function mainLoop() {
 
 // ─── Test Mode ────────────────────────────────────────────────
 async function testMode() {
-  console.log('[v3] TEST MODE — recording one utterance...\n')
+  console.log('[v3] TEST MODE — recording one utterance, routing through OpenClaw...\n')
+
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.error('❌ WS not connected — OpenClaw routing requires WS server')
+    process.exit(1)
+  }
 
   // Force trigger by temporarily disabling cooldown
   lastResponseTime = 0
@@ -822,40 +712,21 @@ async function testMode() {
 
   addToTranscript(text)
 
-  // Stream AI
-  const aiStart = Date.now()
-  let firstToken: number | null = null
-  let response = ''
-
-  const tokens = streamGPT('triggered', getStructuredTranscript(), text, 'test mode')
-  async function* timedTokens() {
-    for await (const t of tokens) {
-      if (!firstToken) { firstToken = Date.now(); process.stdout.write('\n[v3] AI: ') }
-      process.stdout.write(t)
-      response += t
-      yield t
-    }
-  }
-
-  // Stream to TTS
-  const sentences = sentenceSplitter(timedTokens())
-  const { audioUrl, firstChunkMs } = await streamTTS(sentences)
+  // Route through OpenClaw via WS server (same path as production)
+  const timings: Record<string, number> = { vad: durationMs / 1000, stt: sttMs / 1000 }
+  const response = await runResponse('triggered', text, 'test mode', timings, t0)
 
   const totalMs = Date.now() - t0
-  console.log(`\n\n[v3] ✅ Audio: ${audioUrl}`)
-  console.log(`[v3] ⏱️  TIMINGS:`)
+  console.log(`\n[v3] ⏱️  TIMINGS:`)
   console.log(`  VAD:        ${(durationMs / 1000).toFixed(2)}s`)
   console.log(`  STT:        ${(sttMs / 1000).toFixed(2)}s`)
-  console.log(`  AI first:   ${firstToken ? ((firstToken - aiStart) / 1000).toFixed(2) : '?'}s`)
-  console.log(`  AI total:   ${((Date.now() - aiStart) / 1000).toFixed(2)}s`)
-  console.log(`  TTS first:  ${(firstChunkMs / 1000).toFixed(2)}s`)
+  console.log(`  Round-trip: ${(timings.roundTrip || 0).toFixed(2)}s`)
   console.log(`  TOTAL:      ${(totalMs / 1000).toFixed(2)}s`)
 
-  // Broadcast if connected
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    const { action_id, expression, expression_weight } = pickAction(response)
-    ws.send(JSON.stringify({ type: 'speak_audio', audio_url: audioUrl, text: response, action_id, expression, expression_weight }))
-    console.log('[v3] 🔊 Broadcast sent')
+  if (response) {
+    console.log(`[v3] ✅ Response: "${response.slice(0, 100)}..."`)
+  } else {
+    console.log('[v3] ⏭️ No response')
   }
 }
 
@@ -868,7 +739,7 @@ async function main() {
   console.log('║  Streaming Pipeline (<3s target)     ║')
   console.log('╚══════════════════════════════════════╝\n')
 
-  if (!OPENAI_API_KEY) { console.error('❌ OPENAI_API_KEY not set'); process.exit(1) }
+  if (!OPENAI_API_KEY) { console.warn('⚠️  OPENAI_API_KEY not set — Whisper STT will fail. Set it for speech transcription.') }
   if (!ELEVENLABS_API_KEY) { console.error('❌ ElevenLabs API key not found'); process.exit(1) }
 
   try { execSync('which rec', { stdio: 'pipe' }) } catch {
