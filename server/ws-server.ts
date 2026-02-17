@@ -331,21 +331,35 @@ async function streamingTTS(sentences: AsyncIterable<string>): Promise<{ audioUr
 }
 
 /**
- * Full streaming pipeline with instant acknowledgment.
- * 
- * If Gateway takes >ACK_THRESHOLD_MS to produce the first token,
- * we immediately TTS a short ack phrase ("让我看看～") and broadcast it,
- * then stream the real response as a second audio message.
- * 
- * This eliminates the 5-15s dead silence when tools are executing.
+ * Voice-mode system prompt: instructs the model to always speak a brief
+ * acknowledgment BEFORE calling any tool. This ensures the SSE stream
+ * emits tokens immediately, eliminating silent gaps during tool execution.
  */
-const ACK_THRESHOLD_MS = 2000
+const VOICE_SYSTEM_PROMPT = `You are in VOICE MODE — your response will be spoken aloud via TTS.
+Critical rules:
+1. ALWAYS say a brief phrase BEFORE using any tool (e.g. "让我看看～", "我查一下哦"). This gives immediate audio feedback.
+2. NO markdown (**bold**, # headers, | tables, \`code\`, - bullets). TTS reads these literally and it sounds terrible.
+3. Keep it SHORT — 2-4 sentences max unless asked for detail. This is a conversation, not an essay.
+4. Speak naturally, like talking to a friend. No emoji, no URLs.`
+
+/**
+ * Full streaming pipeline with voice-mode system prompt.
+ * 
+ * The voice system prompt ensures the model always says something before
+ * tool calls, so the SSE stream produces tokens immediately instead of
+ * going silent for 5-15s during tool execution.
+ * 
+ * Fallback: if first token still takes >ACK_THRESHOLD_MS, send a hardcoded ack.
+ */
+const ACK_THRESHOLD_MS = 3000  // Raised since model should now ack naturally
 
 async function streamingPipeline(
   messages: Array<{ role: string; content: string }>,
   sessionKey: string = 'vrm-chat',
   opts?: { broadcastAck?: (audioUrl: string, text: string) => void; inputText?: string },
 ): Promise<{ text: string; audioUrl: string; firstChunkMs: number; ackSent: boolean }> {
+  // Prepend voice-mode system prompt
+  messages = [{ role: 'system', content: VOICE_SYSTEM_PROMPT }, ...messages]
   let fullText = ''
   let ackSent = false
 
