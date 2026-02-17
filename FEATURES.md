@@ -28,7 +28,7 @@
          │
          ▼
 ┌──────────────────┐
-│  Scene Generator │  ← AI (GPT-4o) 根据描述生成 scene JSON
+│  Scene Generator │  ← AI (OpenClaw) 根据描述生成 scene JSON
 │  (AI → JSON)     │
 └────────┬─────────┘
          │ scene.json
@@ -119,7 +119,7 @@ interface AssetEntry {
 // scene-generator.ts
 async function generateScene(description: string): Promise<SceneDescription> {
   // 1. 从 asset-registry 拿到所有可用资产列表
-  // 2. 把资产列表 + 用户描述发给 GPT-4o
+  // 2. 把资产列表 + 用户描述发给 OpenClaw
   // 3. GPT 返回符合 SceneDescription schema 的 JSON
   // 4. 验证 + 返回
 }

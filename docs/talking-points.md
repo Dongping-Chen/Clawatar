@@ -38,7 +38,7 @@
                   │
     ┌─────────────┼─────────────────┐
     ▼             ▼                 ▼
- Claude      GPT-4o/5         Local LLM
+ Claude      OpenClaw/5         Local LLM
  Opus 4.6   (low latency)    (privacy)
 ```
 
@@ -86,7 +86,7 @@ This is a **first-mover opportunity** in the Apple ecosystem AI companion space.
 - iOS app prototype (SwiftUI + WKWebView)
 
 ### Day 2 (Feb 12) — Multimodal + Meeting
-- Virtual meeting avatar pipeline (OBS + BlackHole + Whisper + GPT-4o + TTS)
+- Virtual meeting avatar pipeline (OBS + BlackHole + Whisper + OpenClaw + TTS)
 - Meeting Bridge v1→v2→v3 (latency: 12s → 7s → **2.6s** post-speech)
 - Streaming pipeline: VAD + parallel STT/AI/TTS
 - 3D scene system: 6 Blender-generated environments (bedroom, pool, café, phone booth, balcony, izakaya)
@@ -110,7 +110,7 @@ The avatar can **join Google Meet as a participant**:
 
 1. **Video**: VRM avatar rendered in browser → OBS Virtual Camera → Google Meet
 2. **Hearing**: Meeting audio → BlackHole (virtual audio) → Whisper STT
-3. **Thinking**: Full meeting transcript maintained → GPT-4o with context
+3. **Thinking**: Full meeting transcript maintained → OpenClaw with context
 4. **Speaking**: AI response → ElevenLabs TTS → BlackHole virtual mic → meeting audio
 5. **Animation**: Lip sync from audio frequency analysis + emotion-matched gestures
 
@@ -123,7 +123,7 @@ The avatar can **join Google Meet as a participant**:
 ## 🔧 Technical Highlights
 
 ### OpenClaw Backend Power
-- **Multi-model orchestration**: Claude Opus for deep reasoning, GPT-4o for low-latency meeting responses, Whisper for STT
+- **Multi-model orchestration**: Claude Opus for deep reasoning, OpenClaw for low-latency meeting responses, Whisper for STT
 - **24/7 Gateway**: Always-on daemon, heartbeat monitoring, cron scheduling
 - **Multi-channel**: Same AI personality across Telegram, iMessage, voice call, 3D avatar, meeting
 - **Proactive**: Checks email, calendar, weather; sends notifications without being asked

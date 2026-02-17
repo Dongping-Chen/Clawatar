@@ -13,8 +13,8 @@
                                                        │ audio out
                                                        ▼
 ┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
-│  AI Response     │◀───│  Whisper STT │◀────│  BlackHole-2ch  │
-│  (GPT-4o stream) │     │  (transcribe)│     │  (virtual audio)│
+│  OpenClaw        │◀───│  Whisper STT │◀────│  BlackHole-2ch  │
+│  (orchestrated)  │     │  (transcribe)│     │  (virtual audio)│
 │  + TTS + anim    │     └──────────────┘     └─────────────────┘
 └────────┬────────┘
          │ speak_audio + animation
@@ -25,27 +25,23 @@
 └─────────────────┘
 ```
 
-## Pipeline Versions
+## Pipeline
 
-### v1 (`meeting-bridge.ts`) — Basic
-- Fixed-length sox recording → Whisper → OpenClaw CLI → TTS
-- Simple but high latency (~12-15s)
+**Meeting Bridge v3** (`meeting-bridge-v3.ts`) — the only active bridge.
 
-### v2 (`meeting-bridge-v2.ts`) — Smart Triggers
-- Continuous 3s chunks via sox
-- Rolling 2-minute transcript for context
-- Smart trigger detection (20+ name variants, question patterns)
-- `meeting_response` WS type (pre-generated AI text → TTS, no double AI call)
-- 8s response cooldown
-- **Latency: ~8-14s total**
+All AI responses route through **OpenClaw Gateway** — no direct LLM API calls.
+The Gateway handles model selection (Sonnet for meeting speed, Opus for reasoning),
+session management, persona, and conversation context.
 
-### v3 (`meeting-bridge-v3.ts`) — Streaming ⚡
+```
+VAD recording (sox) → Whisper STT → WS meeting_speech → OpenClaw Gateway → TTS → WS broadcast
+```
+
 - **VAD recording**: sox `silence` effect auto-detects speech start/end
-- **Streaming GPT-4o**: Direct OpenAI API, `stream: true`, first token ~0.5s
-- **Sentence splitter**: Yields complete sentences as they arrive
-- **Streaming ElevenLabs TTS**: WebSocket API, starts TTS before AI finishes
-- **Pipelined**: AI generates → sentences split → TTS streams → audio broadcasts
-- **Latency: ~2.6s post-speech** (VAD 3.3s + STT 1.1s + AI 0.46s + TTS 1.45s)
+- **Whisper STT**: OpenAI API (only external API call in the bridge)
+- **OpenClaw Gateway**: Orchestrates model, maintains meeting session context
+- **ElevenLabs TTS**: WebSocket streaming, starts TTS as response arrives
+- **Latency: ~2.6s post-speech**
 
 ## Trigger Detection
 
@@ -65,27 +61,18 @@ Meeting audio → System Output → Multi-Output Device → BlackHole 2ch
                                                      ↓
 sox/rec (CoreAudio) → 16kHz mono WAV → Whisper API → transcript
                                                      ↓
-Trigger check → GPT-4o (streaming) → sentences → ElevenLabs TTS (streaming)
+Trigger check → WS meeting_speech → OpenClaw Gateway → AI response
                                                      ↓
-WS broadcast → VRM lip sync + animation + expression
+ElevenLabs TTS (streaming) → WS broadcast → VRM lip sync + animation
 ```
 
 ## Quick Start
 
 ### Prerequisites
 ```bash
-# OBS Studio
 brew install --cask obs
-
-# BlackHole virtual audio (needs sudo — run manually, then REBOOT)
-brew install --cask blackhole-2ch
-
-# sox for audio recording
+brew install --cask blackhole-2ch  # needs sudo, then REBOOT
 brew install sox
-
-# Verify
-ls /Library/Audio/Plug-Ins/HAL/ | grep BlackHole
-which rec  # should show /opt/homebrew/bin/rec
 ```
 
 ### Audio Routing (one-time setup)
@@ -110,31 +97,24 @@ which rec  # should show /opt/homebrew/bin/rec
 ### Run
 ```bash
 npm run start           # VRM viewer + WS server + audio server
-npm run meeting:v3      # Streaming meeting bridge (recommended)
-# or
-npm run meeting         # v2 meeting bridge (simpler, higher latency)
+npm run meeting:v3      # Meeting bridge
 ```
 
 ## Environment Variables
 
 ```bash
-OPENAI_API_KEY=sk-...        # Required for Whisper STT + GPT-4o
-ELEVENLABS_API_KEY=sk_...    # Required for TTS
+OPENAI_API_KEY=sk-...        # Required for Whisper STT only
+ELEVENLABS_API_KEY=sk_...    # Required for TTS (read from openclaw.json automatically)
 ```
-
-These are read from `~/.openclaw/openclaw.json` skill configs automatically.
 
 ## Files
 | File | Description |
 |------|-------------|
-| `meeting-bridge.ts` | v1 — basic sox + Whisper loop |
-| `meeting-bridge-v2.ts` | v2 — continuous listen + smart triggers + rolling transcript |
-| `meeting-bridge-v3.ts` | v3 — streaming VAD + GPT-4o + ElevenLabs WebSocket |
-| `test-pipeline.ts` | End-to-end latency benchmark tool |
+| `meeting-bridge-v3.ts` | VAD + Whisper STT + OpenClaw Gateway routing + ElevenLabs TTS |
+| `setup-obs.sh` | OBS scene configuration helper |
 | `README.md` | This file |
 
 ## Known Issues
 - Whisper transcribes "Reze" inconsistently — mitigated with prompt param + expanded trigger list
 - `eleven_turbo_v2_5` TTS model may not support Chinese — verify and fall back to `eleven_multilingual_v2`
-- TTS audio currently plays through VRM viewer only — routing back to BlackHole as virtual mic for meeting participants is TODO
 - OBS scene needs manual configuration (browser source → virtual camera)
