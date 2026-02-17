@@ -35,10 +35,17 @@ const API_KEY = (() => {
   } catch { return '' }
 })()
 
-const OUT_DIR = '/tmp/streaming-test'
+const OUT_DIR = '/tmp/voice-fresh-1771360642'
 mkdirSync(OUT_DIR, { recursive: true })
 
-const ACK_THRESHOLD_MS = 2000
+const VOICE_SYSTEM_PROMPT = `You are in VOICE MODE — your response will be spoken aloud via TTS.
+Critical rules:
+1. ALWAYS say a brief phrase BEFORE using any tool (e.g. "让我看看～", "我查一下哦"). This gives immediate audio feedback.
+2. NO markdown (**bold**, # headers, | tables, \`code\`, - bullets). TTS reads these literally and it sounds terrible.
+3. Keep it SHORT — 2-4 sentences max unless asked for detail. This is a conversation, not an essay.
+4. Speak naturally, like talking to a friend. No emoji, no URLs.`
+
+const ACK_THRESHOLD_MS = 3000
 const ACK_PHRASES_ZH = ['让我看看～', '我查一下哦～', '稍等一下～', '嗯，让我想想…']
 const ACK_PHRASES_EN = ["Let me check~", "One sec~", "Hmm, let me look..."]
 
@@ -56,11 +63,14 @@ async function* streamFromGateway(prompt: string): AsyncGenerator<string> {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${GATEWAY_TOKEN}`,
       'x-openclaw-agent-id': 'main',
-      'x-openclaw-session-key': 'streaming-test',
+      'x-openclaw-session-key': 'voice-fresh-1771360642',
     },
     body: JSON.stringify({
       model: 'openclaw', stream: true,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [
+        { role: 'system', content: VOICE_SYSTEM_PROMPT },
+        { role: 'user', content: prompt },
+      ],
     }),
   })
   if (!resp.ok) throw new Error(`Gateway ${resp.status}: ${await resp.text()}`)
