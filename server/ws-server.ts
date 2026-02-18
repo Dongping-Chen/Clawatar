@@ -3,13 +3,20 @@ import { createServer } from 'http'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { randomUUID } from 'crypto'
+import sharp from 'sharp'
 import { visualMemory, type VisualContext } from './visual-memory.js'
 import { multimodalMemory } from './multimodal-memory.js'
 import { EntityStore } from './memory/entity-store.js'
+import { FacePersistenceTracker } from './memory/face-tracker.js'
+import { NewSpeakerDetector } from './memory/speaker-tracker.js'
 
 // Initialize entity memory store
 const entityStore = new EntityStore()
 entityStore.seed()
+
+// New person detection trackers
+const faceTracker = new FacePersistenceTracker()
+const speakerTracker = new NewSpeakerDetector()
 
 // Load config
 const CONFIG_PATH = resolve(import.meta.dirname ?? '.', '..', 'clawatar.config.json')
@@ -902,6 +909,49 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
     }
   }
 
+  // --- New person detection hints (rule-based, injected only when triggered) ---
+  const hints: string[] = []
+
+  // Check face persistence tracker
+  const persistentFaces = faceTracker.getPendingPrompts()
+  if (persistentFaces.length > 0) {
+    const face = persistentFaces[0]
+    const duration = Math.round((Date.now() - face.firstSeen) / 1000)
+    hints.push(`[CONTEXT: An unknown person has been visible in the camera for ${duration} seconds. You might want to ask the user who they are.]`)
+    faceTracker.markPrompted(face.faceHash)
+  }
+
+  // Check unknown speaker tracker
+  const newSpeakers = speakerTracker.getPendingPrompts()
+  if (newSpeakers.length > 0) {
+    hints.push(`[CONTEXT: A new voice has spoken ${newSpeakers[0].sentenceCount} sentences in the conversation. You might want to ask who is talking.]`)
+    speakerTracker.markPrompted(newSpeakers[0].speakerLabel)
+  }
+
+  // Detect user introduction pattern (rule-based NER)
+  const introPatterns = [
+    /(?:this is|meet|let me introduce)\s+(?:my\s+)?(\w[\w\s]{0,30})/i,
+    /(?:这是|介绍一下|认识一下)\s*(?:我的|我们的)?\s*(.{1,20})/,
+  ]
+  for (const pattern of introPatterns) {
+    const match = text.match(pattern)
+    if (match) {
+      const name = match[1].trim()
+      hints.push(`[CONTEXT: The user is introducing someone named "${name}". Record their face and voice from the current camera/audio. Confirm you will remember them.]`)
+      break
+    }
+  }
+
+  // Prepend hints to user message
+  if (hints.length > 0 && messages.length > 0) {
+    const hintBlock = hints.join('\n') + '\n\n'
+    const lastMsg = messages[messages.length - 1]
+    if (typeof lastMsg.content === 'string') {
+      lastMsg.content = hintBlock + lastMsg.content
+    }
+    console.log(`[hints] Injected ${hints.length} new-person hints`)
+  }
+
   /* ── Streaming-audio mode ──────────────────────────────────────── */
   if (isDeviceStreaming(senderWs)) {
     try {
@@ -968,6 +1018,12 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
  * Handle meeting speech — routes through OpenClaw Gateway HTTP API (streaming).
  * Uses x-openclaw-session-key to maintain a persistent meeting session with full context.
  */
+function estimateSentenceCount(text: string): number {
+  const matches = text.match(/[。！？.!?]+/g)
+  if (!matches) return text.trim() ? 1 : 0
+  return Math.max(1, matches.length)
+}
+
 async function handleMeetingSpeech(prompt: string, senderWs: WebSocket) {
   console.log(`[meeting] Pipeline...`)
   const startTime = Date.now()
@@ -1143,11 +1199,44 @@ visualMemory.setSceneChangeCallback((context: VisualContext) => {
     console.error('[MultimodalMemory] Scene change processing error:', e.message))
 })
 
+async function computeFrameHash(base64Image: string): Promise<string> {
+  try {
+    const raw = base64Image.includes(',') ? base64Image.split(',')[1] : base64Image
+    const buffer = Buffer.from(raw, 'base64')
+    const pixels = await sharp(buffer)
+      .resize(8, 8, { fit: 'fill' })
+      .grayscale()
+      .raw()
+      .toBuffer()
+
+    let sum = 0
+    for (let i = 0; i < pixels.length; i++) sum += pixels[i]
+    const avg = sum / pixels.length
+
+    let binary = ''
+    for (let i = 0; i < pixels.length; i++) {
+      binary += pixels[i] >= avg ? '1' : '0'
+    }
+
+    let hex = ''
+    for (let i = 0; i < 64; i += 4) {
+      hex += parseInt(binary.substring(i, i + 4), 2).toString(16)
+    }
+    return hex
+  } catch {
+    return '0000000000000000'
+  }
+}
+
 async function handleCameraFrame(base64Image: string, _senderWs: WebSocket) {
   // Just ingest into ring buffer — no AI call per frame
   const { isDuplicate, sceneChanged } = await visualMemory.ingestFrame(base64Image)
-  
+
   if (!isDuplicate) {
+    // TODO: Replace full-frame hash placeholder with per-face hashes after face detection is implemented.
+    const frameHash = await computeFrameHash(base64Image)
+    faceTracker.ingestFaces([frameHash])
+
     const stats = visualMemory.getStats()
     console.log(`[VisualMemory] Frame ingested (buffer: ${stats.bufferFrames}, dup: ${isDuplicate}, sceneΔ: ${sceneChanged})`)
   }
@@ -1449,6 +1538,20 @@ wss.on('connection', (ws) => {
       return
     }
 
+    // Handle dismiss_face — user/model marks unknown face as passerby
+    if (parsed?.type === 'dismiss_face' && parsed.faceHash) {
+      faceTracker.dismissFace(parsed.faceHash)
+      ws.send(JSON.stringify({ type: 'dismiss_face_result', success: true, faceHash: parsed.faceHash }))
+      return
+    }
+
+    // Handle dismiss_speaker — user/model marks unknown speaker as not relevant
+    if (parsed?.type === 'dismiss_speaker' && parsed.speakerLabel) {
+      speakerTracker.dismissSpeaker(parsed.speakerLabel)
+      ws.send(JSON.stringify({ type: 'dismiss_speaker_result', success: true, speakerLabel: parsed.speakerLabel }))
+      return
+    }
+
     // Handle memory_recall — quick entity recall from text
     if (parsed?.type === 'memory_recall' && parsed.text) {
       const context = entityStore.quickRecall(parsed.text)
@@ -1591,6 +1694,17 @@ wss.on('connection', (ws) => {
       const transcript = parsed.transcript || ''
       const reason = parsed.reason || 'triggered'
       const mode = parsed.mode || 'triggered'
+      const speakerLabel = parsed.speakerLabel || parsed.speaker_label
+      const sentenceCount = Number.isFinite(parsed.sentenceCount)
+        ? parsed.sentenceCount
+        : Number.isFinite(parsed.sentence_count)
+          ? parsed.sentence_count
+          : estimateSentenceCount(parsed.text)
+
+      if (speakerLabel) {
+        speakerTracker.ingestSpeech(speakerLabel, sentenceCount, new Set<string>())
+      }
+
       console.log(`[meeting] ${mode}: "${parsed.text.slice(0, 80)}..." (${reason})`)
       
       const meetingPrompt = mode === 'proactive'
@@ -1631,6 +1745,16 @@ wss.on('connection', (ws) => {
           }
         }
         return
+      }
+
+      const speakerLabel = parsed.speakerLabel || parsed.speaker_label
+      const sentenceCount = Number.isFinite(parsed.sentenceCount)
+        ? parsed.sentenceCount
+        : Number.isFinite(parsed.sentence_count)
+          ? parsed.sentence_count
+          : estimateSentenceCount(parsed.text)
+      if (speakerLabel) {
+        speakerTracker.ingestSpeech(speakerLabel, sentenceCount, new Set<string>())
       }
 
       // Pass source_device for focus-based audio routing
