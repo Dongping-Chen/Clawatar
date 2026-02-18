@@ -953,12 +953,11 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
     console.log(`[entity-memory] Recalled context for: "${text.slice(0, 40)}"`)
   }
 
-  // --- Visual memory search (Tier 1: text only, cheap) ---
-  const visualSearchResults = visualMemory.search(text, 3)
-  const visionSearchResults = visionLog.searchWithScoring(text, 3)
-  const visualMemoryContext = buildVisualMemoryContext(visualSearchResults, visionSearchResults, 5)
+  // --- Visual memory search (Tier 1: text only, embedding-first) ---
+  const visualSearchResults = await visualMemory.search(text, 5)
+  const visualMemoryContext = buildVisualMemoryContext(visualSearchResults, [], 5)
   if (visualMemoryContext) {
-    console.log(`[visual-memory] Recalled ${visualSearchResults.length + visionSearchResults.length} visual records for: "${text.slice(0, 40)}"`)
+    console.log(`[visual-memory] Recalled ${visualSearchResults.length} visual records for: "${text.slice(0, 40)}"`)
   }
 
   // --- Visual context injection ---
@@ -1381,9 +1380,10 @@ async function computeFrameHash(base64Image: string): Promise<string> {
   }
 }
 
-async function handleCameraFrame(base64Image: string, _senderWs: WebSocket) {
+async function handleCameraFrame(base64Image: string, _senderWs: WebSocket): Promise<{ isDuplicate: boolean; sceneChanged: boolean; stored: boolean; reason?: string }> {
   // Just ingest into ring buffer — no AI call per frame
-  const { isDuplicate, sceneChanged } = await visualMemory.ingestFrame(base64Image)
+  const result = await visualMemory.ingestFrame(base64Image)
+  const { isDuplicate, sceneChanged } = result
 
   if (!isDuplicate) {
     // TODO: Replace full-frame hash placeholder with per-face hashes after face detection is implemented.
@@ -1393,6 +1393,8 @@ async function handleCameraFrame(base64Image: string, _senderWs: WebSocket) {
     const stats = visualMemory.getStats()
     console.log(`[VisualMemory] Frame ingested (buffer: ${stats.bufferFrames}, dup: ${isDuplicate}, sceneΔ: ${sceneChanged})`)
   }
+
+  return result
 }
 
 /**
@@ -1621,9 +1623,14 @@ wss.on('connection', (ws) => {
 
     // Handle camera_frame — ingest into visual memory ring buffer
     if (parsed?.type === 'camera_frame' && parsed.image) {
-      handleCameraFrame(parsed.image, ws).catch(e => {
+      try {
+        const result = await handleCameraFrame(parsed.image, ws)
+        if (result.stored) {
+          console.log(`[VisualMemory] Auto-stored: ${result.reason || 'scene_change'}`)
+        }
+      } catch (e: any) {
         console.error('[VisualMemory] Frame ingest error:', e.message)
-      })
+      }
       return
     }
 

@@ -1,11 +1,11 @@
 /**
  * Visual Memory System
- * 
+ *
  * Three-layer architecture:
  * 1. Ring Buffer — last ~60s of raw frames (in-memory)
  * 2. Visual Memory — persistent scene records (text + compressed thumbnails)
  * 3. Tool Interface — AI calls get_visual_context on demand
- * 
+ *
  * Features:
  * - Perceptual hash (pHash) for frame deduplication
  * - Scene change detection
@@ -14,9 +14,11 @@
  * - Proactive scene change alerts
  */
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, unlinkSync, appendFileSync } from 'fs'
-import { join } from 'path'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs'
+import { basename, isAbsolute, join } from 'path'
 import sharp from 'sharp'
+import { MemoryGraph, type MemoryNode } from './memory/memory-graph.js'
+import { getTextEmbedding, isEmbeddingServiceAvailable } from './memory/embedding-service.js'
 
 // ============ Config ============
 
@@ -28,7 +30,7 @@ const THUMBNAIL_MAX_DIM = 320            // Max dimension for thumbnails
 const MAX_THUMBNAILS = 200               // Max stored thumbnails before cleanup
 const MEMORY_DIR = join(process.env.HOME || '', '.openclaw', 'workspace', 'memory', 'visual')
 const THUMBNAILS_DIR = join(MEMORY_DIR, 'thumbnails')
-const VISUAL_LOG_PATH = join(MEMORY_DIR, 'visual-log.jsonl')
+const MEMORY_GRAPH_PATH = join(MEMORY_DIR, 'memory-graph.json')
 
 // ============ Types ============
 
@@ -171,11 +173,11 @@ class FrameRingBuffer {
     const raw = base64.includes(',') ? base64.split(',')[1] : base64
     const buffer = Buffer.from(raw, 'base64')
     const hash = await computePerceptualHash(buffer)
-    
+
     // Check if duplicate of most recent frame
     const lastFrame = this.frames.length > 0 ? this.frames[this.frames.length - 1] : null
     const isDuplicate = lastFrame ? hammingDistance(hash, lastFrame.hash) < SCENE_CHANGE_THRESHOLD : false
-    
+
     // Skip duplicate frames — don't waste ring buffer space
     if (isDuplicate) {
       return { hash, isDuplicate: true, sceneChanged: false }
@@ -216,7 +218,7 @@ class FrameRingBuffer {
     // Walk backwards (newest first)
     for (let i = this.frames.length - 1; i >= 0 && result.length < maxFrames; i--) {
       const frame = this.frames[i]
-      
+
       // Check if this frame is too similar to any already-selected frame
       const isSimilar = seenHashes.some(h => hammingDistance(h, frame.hash) < SCENE_CHANGE_THRESHOLD)
       if (!isSimilar) {
@@ -248,11 +250,19 @@ class FrameRingBuffer {
 
 // ============ Visual Memory Store ============
 
+type NodeMetadataExtras = MemoryNode['metadata'] & {
+  tags?: string[]
+  location?: string
+}
+
 class VisualMemoryStore {
   private records: VisualMemoryRecord[] = []
+  private recordByNodeId: Map<number, VisualMemoryRecord> = new Map()
   private loaded = false
+  private graph: MemoryGraph
 
-  constructor() {
+  constructor(graph: MemoryGraph) {
+    this.graph = graph
     this.ensureDirs()
   }
 
@@ -266,53 +276,169 @@ class VisualMemoryStore {
   private load() {
     if (this.loaded) return
     this.loaded = true
-    
-    if (!existsSync(VISUAL_LOG_PATH)) return
-    
-    try {
-      const content = readFileSync(VISUAL_LOG_PATH, 'utf-8')
-      const lines = content.split('\n').filter(l => l.trim())
-      this.records = lines.map(l => {
-        try { return JSON.parse(l) } catch { return null }
-      }).filter(Boolean) as VisualMemoryRecord[]
-    } catch (e) {
-      console.error('Failed to load visual memory:', e)
+    this.refreshFromGraph()
+  }
+
+  private refreshFromGraph() {
+    const episodicNodes = this.graph.getNodesByType('episodic')
+    const mapped = episodicNodes
+      .map(node => this.nodeToRecord(node))
+      .filter((item): item is { nodeId: number; record: VisualMemoryRecord } => Boolean(item))
+      .sort((a, b) => a.record.ts.localeCompare(b.record.ts))
+
+    this.recordByNodeId = new Map(mapped.map(item => [item.nodeId, item.record]))
+    this.records = mapped.map(item => item.record)
+  }
+
+  private nodeToRecord(node: MemoryNode): { nodeId: number; record: VisualMemoryRecord } | null {
+    if (node.type !== 'episodic' && node.type !== 'semantic') return null
+
+    const meta = (node.metadata || {}) as NodeMetadataExtras
+    const thumbnailPath = meta.thumbnailPath || ''
+
+    const record: VisualMemoryRecord = {
+      ts: meta.timestamp || new Date().toISOString(),
+      description: node.content,
+      thumbnail: thumbnailPath ? basename(thumbnailPath) : '',
+      hash: meta.hash || '',
+      tags: Array.isArray(meta.tags) ? meta.tags : [],
+      location: typeof meta.location === 'string' ? meta.location : undefined,
+    }
+
+    return { nodeId: node.id, record }
+  }
+
+  private nodeToSearchResult(node: MemoryNode, score: number): VisualSearchResult {
+    const meta = (node.metadata || {}) as NodeMetadataExtras
+    const thumbnailPath = meta.thumbnailPath || ''
+
+    return {
+      id: `g${String(node.id).padStart(4, '0')}`,
+      timestamp: meta.timestamp || new Date().toISOString(),
+      description: node.content,
+      thumbnailPath,
+      tags: Array.isArray(meta.tags) ? meta.tags : [],
+      relevanceScore: score,
     }
   }
 
+  private keywordFallbackSearch(query: string, limit: number = 5): VisualSearchResult[] {
+    const tokens = tokenizeSearchQuery(query)
+    if (tokens.length === 0 || this.records.length === 0) return []
+
+    const safeLimit = Math.max(1, limit)
+    const scored: VisualSearchResult[] = []
+
+    const entries = Array.from(this.recordByNodeId.entries())
+    for (const [nodeId, record] of entries) {
+      const tags = Array.isArray(record.tags) ? record.tags : []
+      const searchableText = `${record.description || ''} ${tags.join(' ')}`.toLowerCase()
+
+      let relevanceScore = 0
+      for (const token of tokens) {
+        if (searchableText.includes(token.toLowerCase())) {
+          relevanceScore += 1
+        }
+      }
+
+      if (relevanceScore > 0) {
+        const thumbnailPath = record.thumbnail
+          ? join(THUMBNAILS_DIR, record.thumbnail)
+          : ''
+
+        scored.push({
+          id: `g${String(nodeId).padStart(4, '0')}`,
+          timestamp: record.ts,
+          description: record.description,
+          thumbnailPath,
+          tags,
+          relevanceScore,
+        })
+      }
+    }
+
+    return scored
+      .sort((a, b) => b.relevanceScore - a.relevanceScore || b.timestamp.localeCompare(a.timestamp))
+      .slice(0, safeLimit)
+  }
+
   /**
-   * Store a new visual memory record with compressed thumbnail
+   * Store a new visual memory record + memory-graph node.
    */
-  async addRecord(description: string, jpegBase64: string, hash: string, tags: string[] = [], location?: string): Promise<VisualMemoryRecord> {
+  async addRecord(
+    description: string,
+    jpegBase64: string,
+    hash: string,
+    tags: string[] = [],
+    location?: string,
+    source: string = 'model_request',
+    linkedEntityNodeIds: number[] = [],
+    entityIds: string[] = [],
+  ): Promise<{ nodeId: number; merged: boolean }> {
     this.load()
-    
+
     const now = new Date()
     const filename = `${now.toISOString().replace(/[:.]/g, '-').substring(0, 19)}.jpg`
-    
-    // Compress and save thumbnail via sharp
-    const rawBuffer = Buffer.from(jpegBase64, 'base64')
+    const raw = jpegBase64.includes(',') ? jpegBase64.split(',')[1] : jpegBase64
+
+    // 1) Compress and save thumbnail
+    const rawBuffer = Buffer.from(raw, 'base64')
     const thumbBuffer = await compressThumbnail(rawBuffer)
     const thumbPath = join(THUMBNAILS_DIR, filename)
     writeFileSync(thumbPath, thumbBuffer)
-    console.log(`[VisualMemory] Thumbnail saved: ${filename} (${(rawBuffer.length/1024).toFixed(0)}KB → ${(thumbBuffer.length/1024).toFixed(0)}KB)`)
-    
-    const record: VisualMemoryRecord = {
-      ts: now.toISOString(),
-      description,
-      thumbnail: filename,
+    console.log(`[VisualMemory] Thumbnail saved: ${filename} (${(rawBuffer.length / 1024).toFixed(0)}KB → ${(thumbBuffer.length / 1024).toFixed(0)}KB)`)
+
+    // 2) Get text embedding
+    const embedding = await getTextEmbedding(description)
+
+    // 3) Merge/create episodic node
+    const metadata: NodeMetadataExtras = {
+      timestamp: now.toISOString(),
+      source,
+      thumbnailPath: thumbPath,
       hash,
+      entityId: entityIds[0],
       tags,
       location,
     }
-    
-    // Append to JSONL log
-    appendFileSync(VISUAL_LOG_PATH, JSON.stringify(record) + '\n')
-    this.records.push(record)
-    
-    // Cleanup old thumbnails if too many
+
+    let nodeId = -1
+    let merged = false
+
+    if (embedding.length > 0) {
+      const result = this.graph.mergeOrCreate(
+        'episodic',
+        description,
+        embedding,
+        metadata as Partial<MemoryNode['metadata']>,
+        linkedEntityNodeIds,
+      )
+      nodeId = result.nodeId
+      merged = result.merged
+    } else {
+      nodeId = this.graph.addNode(
+        'episodic',
+        description,
+        [],
+        metadata as Partial<MemoryNode['metadata']>,
+      )
+      for (const entityNodeId of linkedEntityNodeIds) {
+        this.graph.addEdge(nodeId, entityNodeId, 1)
+      }
+      merged = false
+    }
+
+    // 4) Compact and persist
+    const compactResult = this.graph.compact(1000)
+    if (compactResult.removed > 0) {
+      console.log(`[VisualMemory] Graph compacted, removed ${compactResult.removed} low-value nodes`)
+    }
+    this.graph.save()
+
+    this.refreshFromGraph()
     this.cleanup()
-    
-    return record
+
+    return { nodeId, merged }
   }
 
   /**
@@ -332,52 +458,56 @@ class VisualMemoryStore {
   }
 
   /**
-   * Search visual memory by keyword matching (Chinese + English tokens).
-   * Returns scored text-only results with thumbnail file paths.
+   * Resolve a record from graph node ID.
    */
-  search(query: string, limit: number = 5): VisualSearchResult[] {
+  getRecordByNodeId(nodeId: number): VisualMemoryRecord | null {
+    this.load()
+    return this.recordByNodeId.get(nodeId) || null
+  }
+
+  /**
+   * Search visual memory using embedding similarity first; fallback to keyword matching.
+   */
+  async search(query: string, limit: number = 5): Promise<VisualSearchResult[]> {
     this.load()
 
-    const tokens = tokenizeSearchQuery(query)
-    if (tokens.length === 0 || this.records.length === 0) return []
-
     const safeLimit = Math.max(1, limit)
-    const scored: VisualSearchResult[] = []
+    const trimmed = query.trim()
+    if (!trimmed) return []
 
-    for (let i = 0; i < this.records.length; i++) {
-      const record = this.records[i]
-      const tags = Array.isArray(record.tags) ? record.tags : []
-      const searchableText = `${record.description || ''} ${tags.join(' ')}`.toLowerCase()
+    if (isEmbeddingServiceAvailable()) {
+      const queryEmbedding = await getTextEmbedding(trimmed)
+      if (queryEmbedding.length > 0) {
+        const ranked = this.graph.searchTextNodes(queryEmbedding, undefined, safeLimit * 3)
+        const semanticResults: VisualSearchResult[] = []
 
-      let relevanceScore = 0
-      for (const token of tokens) {
-        if (searchableText.includes(token.toLowerCase())) {
-          relevanceScore += 1
+        for (const item of ranked) {
+          if (item.score <= 0) continue
+          const node = this.graph.getNode(item.nodeId)
+          if (!node) continue
+          if (node.type !== 'episodic' && node.type !== 'semantic') continue
+          const searchResult = this.nodeToSearchResult(node, item.score)
+          if (!searchResult.thumbnailPath) continue
+          semanticResults.push(searchResult)
         }
-      }
 
-      if (relevanceScore > 0) {
-        scored.push({
-          id: `v${String(i + 1).padStart(3, '0')}`,
-          timestamp: record.ts,
-          description: record.description,
-          thumbnailPath: join(THUMBNAILS_DIR, record.thumbnail),
-          tags,
-          relevanceScore,
-        })
+        if (semanticResults.length > 0) {
+          return semanticResults
+            .sort((a, b) => b.relevanceScore - a.relevanceScore || b.timestamp.localeCompare(a.timestamp))
+            .slice(0, safeLimit)
+        }
       }
     }
 
-    return scored
-      .sort((a, b) => b.relevanceScore - a.relevanceScore || b.timestamp.localeCompare(a.timestamp))
-      .slice(0, safeLimit)
+    return this.keywordFallbackSearch(trimmed, safeLimit)
   }
 
   /**
    * Get a thumbnail as base64
    */
   getThumbnailBase64(filename: string): string | null {
-    const path = join(THUMBNAILS_DIR, filename)
+    if (!filename) return null
+    const path = isAbsolute(filename) ? filename : join(THUMBNAILS_DIR, filename)
     if (!existsSync(path)) return null
     return readFileSync(path).toString('base64')
   }
@@ -388,7 +518,7 @@ class VisualMemoryStore {
   getMemorySummary(count: number = 5): string {
     const records = this.getRecentRecords(count)
     if (records.length === 0) return '(no visual memories yet)'
-    
+
     return records.map(r => {
       const time = new Date(r.ts).toLocaleString('zh-CN', { timeZone: 'America/New_York' })
       const tags = r.tags.length > 0 ? ` [${r.tags.join(', ')}]` : ''
@@ -402,21 +532,34 @@ class VisualMemoryStore {
   hasSceneChanged(currentHash: string): boolean {
     const latest = this.getLatest()
     if (!latest) return true // No memory = new scene
+    if (!latest.hash) return true
     return hammingDistance(currentHash, latest.hash) >= SCENE_CHANGE_THRESHOLD
   }
 
   /**
-   * Cleanup old thumbnails when exceeding limit
+   * Cleanup orphaned old thumbnails when exceeding limit.
    */
   private cleanup() {
     try {
       const files = readdirSync(THUMBNAILS_DIR).sort()
-      if (files.length > MAX_THUMBNAILS) {
-        const toDelete = files.slice(0, files.length - MAX_THUMBNAILS)
-        for (const f of toDelete) {
-          try { unlinkSync(join(THUMBNAILS_DIR, f)) } catch {}
-        }
-        console.log(`Visual memory: cleaned up ${toDelete.length} old thumbnails`)
+      if (files.length <= MAX_THUMBNAILS) return
+
+      const referenced = new Set(
+        this.records
+          .map(record => record.thumbnail)
+          .filter(name => !!name),
+      )
+
+      const orphaned = files.filter(file => !referenced.has(file))
+      const overflow = files.length - MAX_THUMBNAILS
+      const toDelete = orphaned.slice(0, overflow)
+
+      for (const file of toDelete) {
+        try { unlinkSync(join(THUMBNAILS_DIR, file)) } catch {}
+      }
+
+      if (toDelete.length > 0) {
+        console.log(`[VisualMemory] Cleaned up ${toDelete.length} orphaned thumbnails`)
       }
     } catch {}
   }
@@ -432,13 +575,17 @@ class VisualMemoryStore {
 export class VisualMemoryManager {
   private ringBuffer: FrameRingBuffer
   private memoryStore: VisualMemoryStore
+  private graph: MemoryGraph
   private cameraActive: boolean = false
+  private cameraJustOpened: boolean = false
+  private lastStoredHash: string | null = null
   private lastSceneChangeAlert: number = 0
   private onSceneChange?: (context: VisualContext) => void
 
   constructor() {
     this.ringBuffer = new FrameRingBuffer(RING_BUFFER_MAX_FRAMES)
-    this.memoryStore = new VisualMemoryStore()
+    this.graph = new MemoryGraph(MEMORY_GRAPH_PATH)
+    this.memoryStore = new VisualMemoryStore(this.graph)
   }
 
   /**
@@ -454,12 +601,15 @@ export class VisualMemoryManager {
   setCameraActive(active: boolean) {
     const wasActive = this.cameraActive
     this.cameraActive = active
-    
+
     if (active && !wasActive) {
       console.log('[VisualMemory] Camera activated')
       this.ringBuffer.clear()
+      this.cameraJustOpened = true
+      this.lastStoredHash = null
     } else if (!active && wasActive) {
       console.log(`[VisualMemory] Camera deactivated (buffer had ${this.ringBuffer.size()} frames)`)
+      this.cameraJustOpened = false
     }
   }
 
@@ -467,14 +617,102 @@ export class VisualMemoryManager {
     return this.cameraActive
   }
 
+  private ensureEntityNodeIds(entityIds?: string[]): number[] {
+    if (!Array.isArray(entityIds) || entityIds.length === 0) return []
+
+    const uniqueEntityIds = Array.from(new Set(entityIds.map(id => id?.trim()).filter(Boolean) as string[]))
+    if (uniqueEntityIds.length === 0) return []
+
+    const existingNodes = [
+      ...this.graph.getNodesByType('img'),
+      ...this.graph.getNodesByType('voice'),
+    ]
+
+    const result: number[] = []
+
+    for (const entityId of uniqueEntityIds) {
+      const matched = existingNodes.find(node => node.metadata?.entityId === entityId)
+      if (matched) {
+        result.push(matched.id)
+        continue
+      }
+
+      const nodeId = this.graph.addNode(
+        'img',
+        `entity:${entityId}`,
+        [],
+        {
+          timestamp: new Date().toISOString(),
+          source: 'person_detected',
+          entityId,
+        },
+      )
+
+      result.push(nodeId)
+      const newNode = this.graph.getNode(nodeId)
+      if (newNode) existingNodes.push(newNode)
+    }
+
+    return result
+  }
+
+  private async storeToGraph(
+    description: string,
+    jpegBase64: string,
+    hash: string,
+    source: string,
+    entityIds: string[] = [],
+    tags: string[] = [],
+    location?: string,
+  ): Promise<number> {
+    const linkedEntityNodeIds = this.ensureEntityNodeIds(entityIds)
+
+    const { nodeId } = await this.memoryStore.addRecord(
+      description,
+      jpegBase64,
+      hash,
+      tags,
+      location,
+      source,
+      linkedEntityNodeIds,
+      entityIds,
+    )
+
+    return nodeId
+  }
+
   /**
    * Ingest a new camera frame (called on each frame from frontend)
-   * Returns whether a significant scene change was detected
+   * Returns dedup + scene-change information and whether it was auto-stored.
    */
-  async ingestFrame(base64Jpeg: string): Promise<{ isDuplicate: boolean; sceneChanged: boolean }> {
+  async ingestFrame(base64Jpeg: string): Promise<{ isDuplicate: boolean; sceneChanged: boolean; stored: boolean; reason?: string }> {
     const { hash, isDuplicate, sceneChanged } = await this.ringBuffer.push(base64Jpeg)
-    
-    // Proactive scene change detection
+
+    let stored = false
+    let reason: string | undefined
+
+    if (this.cameraActive && !isDuplicate) {
+      if (this.cameraJustOpened) {
+        await this.storeToGraph('[auto] Camera opened', base64Jpeg, hash, 'camera_opened')
+        this.cameraJustOpened = false
+        this.lastStoredHash = hash
+        stored = true
+        reason = 'camera_opened'
+      } else {
+        const changedSinceLastStored = this.lastStoredHash
+          ? hammingDistance(hash, this.lastStoredHash) >= SCENE_CHANGE_THRESHOLD
+          : true
+
+        if (changedSinceLastStored) {
+          await this.storeToGraph('[auto] Scene change detected', base64Jpeg, hash, 'scene_change')
+          this.lastStoredHash = hash
+          stored = true
+          reason = 'scene_change'
+        }
+      }
+    }
+
+    // Proactive scene change detection (for auto-captioning callback)
     if (sceneChanged && this.onSceneChange) {
       const now = Date.now()
       // Don't alert more than once per 30s
@@ -485,7 +723,7 @@ export class VisualMemoryManager {
       }
     }
 
-    return { isDuplicate, sceneChanged }
+    return { isDuplicate, sceneChanged, stored, reason }
   }
 
   /**
@@ -513,9 +751,42 @@ export class VisualMemoryManager {
   /**
    * Store a visual memory record (called after AI analyzes a scene)
    */
-  async storeMemory(description: string, jpegBase64: string, hash?: string, tags: string[] = [], location?: string): Promise<VisualMemoryRecord> {
-    const actualHash = hash || await computePerceptualHash(Buffer.from(jpegBase64, 'base64'))
-    return this.memoryStore.addRecord(description, jpegBase64, actualHash, tags, location)
+  async storeMemory(
+    description: string,
+    jpegBase64: string,
+    hash?: string,
+    tags: string[] = [],
+    location?: string,
+    entityIds: string[] = [],
+    source: string = 'model_request',
+  ): Promise<VisualMemoryRecord> {
+    const raw = jpegBase64.includes(',') ? jpegBase64.split(',')[1] : jpegBase64
+    const actualHash = hash || await computePerceptualHash(Buffer.from(raw, 'base64'))
+
+    const nodeId = await this.storeToGraph(
+      description,
+      raw,
+      actualHash,
+      source,
+      entityIds,
+      tags,
+      location,
+    )
+
+    this.lastStoredHash = actualHash
+
+    const record = this.memoryStore.getRecordByNodeId(nodeId) || this.memoryStore.getLatest()
+    if (record) return record
+
+    // Defensive fallback (should rarely happen)
+    return {
+      ts: new Date().toISOString(),
+      description,
+      thumbnail: '',
+      hash: actualHash,
+      tags,
+      location,
+    }
   }
 
   /**
@@ -540,20 +811,28 @@ export class VisualMemoryManager {
   }
 
   /**
-   * Search stored visual memories by keyword.
+   * Search stored visual memories.
    */
-  search(query: string, limit: number = 5): VisualSearchResult[] {
+  async search(query: string, limit: number = 5): Promise<VisualSearchResult[]> {
     return this.memoryStore.search(query, limit)
+  }
+
+  getGraph(): MemoryGraph {
+    return this.graph
   }
 
   /**
    * Stats for debugging
    */
   getStats() {
+    const graphStats = this.graph.getStats()
     return {
       cameraActive: this.cameraActive,
       bufferFrames: this.ringBuffer.size(),
       memoryRecords: this.memoryStore.recordCount(),
+      graphNodes: graphStats.nodes,
+      graphEdges: graphStats.edges,
+      graphByType: graphStats.byType,
     }
   }
 }
