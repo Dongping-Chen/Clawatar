@@ -824,48 +824,6 @@ async function askOpenClaw(userText: string): Promise<string> {
  * Gateway doesn't support multimodal content, so we call OpenAI directly.
  * Returns a text description of what's visible in the frames.
  */
-async function analyzeFramesVision(frames: string[], userQuery: string): Promise<string> {
-  // Get OpenAI API key (same as Whisper)
-  const apiKey = process.env.OPENAI_API_KEY || (() => {
-    try {
-      const configPath = join(process.env.HOME || '', '.openclaw', 'openclaw.json')
-      return JSON.parse(readFileSync(configPath, 'utf-8')).skills?.entries?.['openai-whisper-api']?.apiKey || ''
-    } catch { return '' }
-  })()
-
-  if (!apiKey) throw new Error('No OpenAI API key available for vision')
-
-  const content: any[] = [
-    {
-      type: 'text',
-      text: `Describe what you see in this camera image. The user asks: "${userQuery}". Be concise (2-3 sentences). Describe people, objects, environment, and anything notable.`,
-    },
-  ]
-  for (const frame of frames) {
-    content.push({
-      type: 'image_url',
-      image_url: { url: `data:image/jpeg;base64,${frame}`, detail: 'low' },
-    })
-  }
-
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini', // Fast + cheap for simple vision tasks
-      messages: [{ role: 'user', content }],
-      max_tokens: 200,
-    }),
-  })
-
-  if (!resp.ok) throw new Error(`Vision API ${resp.status}: ${await resp.text()}`)
-  const json = await resp.json() as any
-  return json.choices?.[0]?.message?.content || '(no description)'
-}
-
 async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?: string) {
   console.log(`User said: "${text}" (from device: ${sourceDevice || 'unknown'})`)
   const startTime = Date.now()
@@ -902,30 +860,22 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
   if (visualMemory.isCameraActive() && visualKeywords.test(text)) {
     const ctx = visualMemory.getVisualContext('user_visual_request')
     if (ctx.currentFrames.length > 0) {
-      // Gateway doesn't support multimodal (image_url) content —
-      // analyze frames via direct OpenAI Vision API, inject description as text
+      const framePaths: string[] = []
       const framesToSend = ctx.currentFrames.slice(-2)
-      let sceneDescription = ''
-      try {
-        sceneDescription = await analyzeFramesVision(framesToSend, text)
-        console.log(`[visual] Vision analysis: "${sceneDescription.slice(0, 100)}"`)
-      } catch (e: any) {
-        console.error(`[visual] Vision API error: ${e.message}`)
-        sceneDescription = '(Vision analysis failed — could not process camera frames)'
+      for (let i = 0; i < framesToSend.length; i++) {
+        const framePath = `/tmp/camera-frame-${Date.now()}-${i}.jpg`
+        writeFileSync(framePath, Buffer.from(framesToSend[i], 'base64'))
+        framePaths.push(framePath)
       }
-
-      // Build enriched text prompt with visual description
-      let enrichedText = text
-      if (sceneDescription) {
-        enrichedText = `[CAMERA VIEW — what I currently see]\n${sceneDescription}\n`
-        if (ctx.memorySummary && ctx.memorySummary !== '(no visual memories yet)') {
-          enrichedText += `[Previous visual observations]\n${ctx.memorySummary}\n`
-        }
-        enrichedText += `[Scene changed: ${ctx.sceneChanged ? 'yes' : 'no'}]\n\n`
-        enrichedText += `User says: ${text}`
+      let enrichedText = `[CAMERA IS ACTIVE — frames captured]\n`
+      enrichedText += `Camera frames saved at: ${framePaths.join(', ')}\n`
+      enrichedText += `Please analyze these camera images to answer the user's question.\n`
+      if (ctx.memorySummary && ctx.memorySummary !== '(no visual memories yet)') {
+        enrichedText += `[Previous visual observations]\n${ctx.memorySummary}\n`
       }
+      enrichedText += `\nUser says: ${text}`
       messages = [{ role: 'user', content: enrichedText }]
-      console.log(`[visual] Injected vision description into context (${sceneDescription.length} chars)`)
+      console.log(`[visual] Saved ${framePaths.length} frames to disk, injected paths into context`)
     } else {
       messages = [{ role: 'user', content: text }]
     }
@@ -1433,6 +1383,13 @@ wss.on('connection', (ws) => {
             }))
           }
         }, 3000)
+      } else {
+        // Clean up temp camera frames
+        try {
+          const tmpFiles = readdirSync('/tmp').filter(f => f.startsWith('camera-frame-') && f.endsWith('.jpg'))
+          for (const f of tmpFiles) unlinkSync(`/tmp/${f}`)
+          if (tmpFiles.length > 0) console.log(`[visual] Cleaned up ${tmpFiles.length} temp camera frames`)
+        } catch {}
       }
       return
     }
