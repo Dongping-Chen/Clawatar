@@ -7,11 +7,13 @@ import sharp from 'sharp'
 import { visualMemory, type VisualContext } from './visual-memory.js'
 import { multimodalMemory } from './multimodal-memory.js'
 import { EntityStore } from './memory/entity-store.js'
+import { VisionLog } from './memory/vision-log.js'
 import { FacePersistenceTracker } from './memory/face-tracker.js'
 import { NewSpeakerDetector } from './memory/speaker-tracker.js'
 
 // Initialize entity memory store
 const entityStore = new EntityStore()
+const visionLog = new VisionLog()
 entityStore.seed()
 
 // New person detection trackers
@@ -888,9 +890,8 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
       let enrichedText = `[CAMERA IS ACTIVE — frames captured]\n`
       enrichedText += `Camera frames saved at: ${framePaths.join(', ')}\n`
       enrichedText += `Please analyze these camera images to answer the user's question.\n`
-      if (ctx.memorySummary && ctx.memorySummary !== '(no visual memories yet)') {
-        enrichedText += `[Previous visual observations]\n${ctx.memorySummary}\n`
-      }
+      const visionSummary = visionLog.getSummaryText()
+      enrichedText += `${visionSummary}\n`
       enrichedText += `\nUser says: ${text}`
       messages = [{ role: 'user', content: enrichedText }]
       console.log(`[visual] Saved ${framePaths.length} frames to disk, injected paths into context`)
@@ -1178,13 +1179,15 @@ multimodalMemory.setAnalyzeCallback(async (params) => {
 
 // Set up proactive scene change alerts + multimodal memory integration
 visualMemory.setSceneChangeCallback((context: VisualContext) => {
-  console.log(`[VisualMemory] Scene change detected! Notifying clients + triggering memory...`)
+  console.log('[VisualMemory] Scene change detected! Notifying clients + triggering memory...')
+
+  const summaryText = visionLog.getSummaryText()
 
   // Notify frontend clients
   const msg = JSON.stringify({
     type: 'scene_change_detected',
     sceneChanged: true,
-    memorySummary: context.memorySummary,
+    memorySummary: summaryText,
     frameCount: context.frameCount,
     timestamp: Date.now(),
   })
@@ -1194,10 +1197,38 @@ visualMemory.setSceneChangeCallback((context: VisualContext) => {
     }
   }
 
-  // Trigger multimodal memory auto-captioning
-  multimodalMemory.onSceneChange(context).catch(e =>
-    console.error('[MultimodalMemory] Scene change processing error:', e.message))
+  // Trigger multimodal memory auto-captioning, then persist structured vision record.
+  void (async () => {
+    try {
+      const previousMemoryTs = visualMemory.getLatestMemory()?.ts
+      await multimodalMemory.onSceneChange(context)
+      const latestMemory = visualMemory.getLatestMemory()
+      if (!latestMemory || latestMemory.ts === previousMemoryTs) return
+
+      visionLog.addRecord({
+        description: latestMemory.description,
+        entitiesPresent: detectEntitiesInDescription(latestMemory.description),
+        tags: latestMemory.tags || [],
+        thumbnailPath: join(process.env.HOME || '', '.openclaw', 'workspace', 'memory', 'visual', 'thumbnails', latestMemory.thumbnail),
+        sceneHash: latestMemory.hash,
+        source: 'camera',
+      })
+    } catch (e: any) {
+      console.error('[VisionLog] Scene change processing error:', e.message)
+    }
+  })()
 })
+
+function detectEntitiesInDescription(description: string): string[] {
+  const lower = description.toLowerCase()
+  return entityStore
+    .listEntities()
+    .filter(entity => {
+      const names = [entity.name, ...entity.aliases].filter(Boolean) as string[]
+      return names.some(name => lower.includes(name.toLowerCase()))
+    })
+    .map(entity => entity.id)
+}
 
 async function computeFrameHash(base64Image: string): Promise<string> {
   try {

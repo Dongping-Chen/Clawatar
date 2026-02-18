@@ -8,9 +8,10 @@
  *   semantic/{entity-id}.json — Semantic memories per entity
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
+import sharp from 'sharp'
 
 // ── Interfaces ──
 
@@ -30,6 +31,7 @@ export interface Entity {
   faceDescriptions: FaceSnapshot[]
   appearanceDescription: string
   voiceDescription: string | null
+  voiceClipPaths: string[]
   speakerEmbedding: number[] | null
   relationship: string
   firstSeen: string
@@ -78,6 +80,8 @@ export class EntityStore {
     mkdirSync(this.baseDir, { recursive: true })
     mkdirSync(join(this.baseDir, 'episodes'), { recursive: true })
     mkdirSync(join(this.baseDir, 'semantic'), { recursive: true })
+    mkdirSync(join(this.baseDir, 'faces'), { recursive: true })
+    mkdirSync(join(this.baseDir, 'voices'), { recursive: true })
     this.loadIndex()
   }
 
@@ -125,10 +129,24 @@ export class EntityStore {
   // ── Entity CRUD ──
 
   private entityPath(id: string): string { return join(this.baseDir, `${id}.json`) }
+  private faceDir(entityId: string): string { return join(this.baseDir, 'faces', entityId) }
+  private voiceDir(entityId: string): string { return join(this.baseDir, 'voices', entityId) }
+
+  private normalizeEntity(entity: Entity): Entity {
+    return {
+      ...entity,
+      faceDescriptions: entity.faceDescriptions ?? [],
+      voiceClipPaths: entity.voiceClipPaths ?? [],
+      voiceDescription: entity.voiceDescription ?? null,
+      aliases: entity.aliases ?? [],
+      facts: entity.facts ?? [],
+    }
+  }
 
   getEntity(id: string): Entity | null {
     try {
-      return JSON.parse(readFileSync(this.entityPath(id), 'utf-8'))
+      const entity = JSON.parse(readFileSync(this.entityPath(id), 'utf-8')) as Entity
+      return this.normalizeEntity(entity)
     } catch { return null }
   }
 
@@ -147,6 +165,7 @@ export class EntityStore {
       faceDescriptions: data.faceDescriptions ?? [],
       appearanceDescription: data.appearanceDescription ?? '',
       voiceDescription: data.voiceDescription ?? null,
+      voiceClipPaths: data.voiceClipPaths ?? [],
       speakerEmbedding: data.speakerEmbedding ?? null,
       relationship: data.relationship ?? '',
       firstSeen: data.firstSeen ?? now,
@@ -187,7 +206,8 @@ export class EntityStore {
       for (const file of readdirSync(this.baseDir)) {
         if (file.endsWith('.json') && file !== 'index.json') {
           try {
-            entities.push(JSON.parse(readFileSync(join(this.baseDir, file), 'utf-8')))
+            const entity = JSON.parse(readFileSync(join(this.baseDir, file), 'utf-8')) as Entity
+            entities.push(this.normalizeEntity(entity))
           } catch {}
         }
       }
@@ -315,6 +335,86 @@ export class EntityStore {
     memories.push(mem)
     writeFileSync(this.semanticPath(entityId), JSON.stringify(memories, null, 2))
     return mem
+  }
+
+  async storeFaceSnapshot(entityId: string, imageBuffer: Buffer, description: string, context: string): Promise<FaceSnapshot> {
+    const entity = this.getEntity(entityId)
+    if (!entity) {
+      throw new Error(`Entity not found: ${entityId}`)
+    }
+
+    const dir = this.faceDir(entityId)
+    mkdirSync(dir, { recursive: true })
+
+    const timestamp = new Date().toISOString()
+    const fileName = `${timestamp.replace(/[:.]/g, '-')}.jpg`
+    const filePath = join(dir, fileName)
+
+    const jpegBuffer = await sharp(imageBuffer)
+      .resize(256, 256, { fit: 'cover' })
+      .jpeg({ quality: 80 })
+      .toBuffer()
+
+    writeFileSync(filePath, jpegBuffer)
+
+    const snapshot: FaceSnapshot = {
+      timestamp,
+      imagePath: filePath,
+      description,
+      context,
+      confidence: 1.0,
+    }
+
+    entity.faceDescriptions = [...(entity.faceDescriptions || []), snapshot]
+      .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+
+    while (entity.faceDescriptions.length > 5) {
+      const removed = entity.faceDescriptions.shift()
+      if (removed?.imagePath && existsSync(removed.imagePath)) {
+        try { unlinkSync(removed.imagePath) } catch {}
+      }
+    }
+
+    this.updateEntity(entityId, { faceDescriptions: entity.faceDescriptions })
+    return snapshot
+  }
+
+  getFaceSnapshots(entityId: string): FaceSnapshot[] {
+    const entity = this.getEntity(entityId)
+    return entity?.faceDescriptions ?? []
+  }
+
+  storeVoiceClip(entityId: string, audioBuffer: Buffer, description: string, format: string): string {
+    const entity = this.getEntity(entityId)
+    if (!entity) {
+      throw new Error(`Entity not found: ${entityId}`)
+    }
+
+    const normalizedFormat = (format || 'wav').toLowerCase().replace(/[^a-z0-9]/g, '') || 'wav'
+    const dir = this.voiceDir(entityId)
+    mkdirSync(dir, { recursive: true })
+
+    const timestamp = Date.now()
+    const fileName = `ref_${timestamp}.${normalizedFormat}`
+    const filePath = join(dir, fileName)
+    writeFileSync(filePath, audioBuffer)
+
+    const currentPaths = [...(entity.voiceClipPaths ?? []), filePath]
+      .sort((a, b) => a.localeCompare(b))
+
+    while (currentPaths.length > 3) {
+      const removedPath = currentPaths.shift()
+      if (removedPath && existsSync(removedPath)) {
+        try { unlinkSync(removedPath) } catch {}
+      }
+    }
+
+    this.updateEntity(entityId, {
+      voiceDescription: description,
+      voiceClipPaths: currentPaths,
+    })
+
+    return filePath
   }
 
   // ── Seed initial entities ──
