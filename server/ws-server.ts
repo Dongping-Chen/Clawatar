@@ -3,6 +3,7 @@ import { createServer } from 'http'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { randomUUID } from 'crypto'
+import { visualMemory, type VisualContext } from './visual-memory.js'
 
 // Load config
 const CONFIG_PATH = resolve(import.meta.dirname ?? '.', '..', 'clawatar.config.json')
@@ -346,7 +347,7 @@ async function streamingTTS(sentences: AsyncIterable<string>): Promise<{ audioUr
 const GAP_THRESHOLD_MS = 1500
 
 async function twoPhaseStreamingPipeline(
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<{ role: string; content: any }>,
   sessionKey: string = 'vrm-chat',
   broadcastFn: (audioUrl: string, text: string, isAck: boolean) => void,
 ): Promise<{ text: string; audioUrl: string; firstAudioMs: number; ackSent: boolean }> {
@@ -458,7 +459,7 @@ async function twoPhaseStreamingPipeline(
  * ─────────────────────────────────────────────────────────────────────
  */
 async function streamingAudioPipeline(
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<{ role: string; content: any }>,
   sessionKey: string,
   broadcastToClients: (msg: any) => void,
 ): Promise<{ text: string; firstChunkMs: number }> {
@@ -813,11 +814,46 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
     }
   }
 
+  // --- Visual context injection ---
+  // If camera is active, check if we should include visual context
+  // Triggers: visual keywords in user text, or camera just opened
+  const visualKeywords = /看|see|show|这是|what|image|图|视频|camera|摄像|样子|穿|外面|在哪|where|look/i
+  let messages: Array<{ role: string; content: any }> = []
+
+  if (visualMemory.isCameraActive() && visualKeywords.test(text)) {
+    const ctx = visualMemory.getVisualContext('user_visual_request')
+    if (ctx.currentFrames.length > 0) {
+      // Build multimodal user message: text + images
+      const content: any[] = [{ type: 'text', text }]
+      // Include up to 2 deduped frames (save tokens)
+      const framesToSend = ctx.currentFrames.slice(-2)
+      for (const frame of framesToSend) {
+        content.push({
+          type: 'image_url',
+          image_url: { url: `data:image/jpeg;base64,${frame}` },
+        })
+      }
+      // Add visual memory context as system info
+      if (ctx.memorySummary && ctx.memorySummary !== '(no visual memories yet)') {
+        content.unshift({
+          type: 'text',
+          text: `[Visual memory - previous observations]\n${ctx.memorySummary}\n[Current: ${ctx.sceneChanged ? 'scene has changed since last memory' : 'same scene as last memory'}]`,
+        })
+      }
+      messages = [{ role: 'user', content }]
+      console.log(`[visual] Injected ${framesToSend.length} frames + memory into context (sceneΔ: ${ctx.sceneChanged})`)
+    } else {
+      messages = [{ role: 'user', content: text }]
+    }
+  } else {
+    messages = [{ role: 'user', content: text }]
+  }
+
   /* ── Streaming-audio mode ──────────────────────────────────────── */
   if (isDeviceStreaming(senderWs)) {
     try {
       const { text: response, firstChunkMs } = await streamingAudioPipeline(
-        [{ role: 'user', content: text }],
+        messages,
         'vrm-chat',
         broadcast,
       )
@@ -843,7 +879,7 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
     }
 
     const { text: response, audioUrl, firstAudioMs, ackSent } = await twoPhaseStreamingPipeline(
-      [{ role: 'user', content: text }],
+      messages,
       'vrm-chat',
       broadcastFn,
     )
@@ -976,74 +1012,75 @@ function broadcastDeviceList() {
   }
 }
 
-// --- Camera frame analysis ---
-let lastFrameTime = 0
-const FRAME_COOLDOWN_MS = 3000 // Min 3s between vision analyses
+// --- Visual Memory: Camera frame ingestion ---
 
-async function handleCameraFrame(base64Image: string, senderWs: WebSocket) {
-  const now = Date.now()
-  if (now - lastFrameTime < FRAME_COOLDOWN_MS) {
-    return // Rate limit
-  }
-  lastFrameTime = now
-
-  console.log(`Camera frame received (${(base64Image.length / 1024).toFixed(1)}KB), analyzing...`)
-
-  try {
-    // Save frame as temp file for vision analysis
-    const frameBuffer = Buffer.from(base64Image, 'base64')
-    const framePath = join(AUDIO_CACHE_DIR, `frame_${Date.now()}.jpg`)
-    writeFileSync(framePath, frameBuffer)
-
-    // Ask OpenClaw to analyze what it sees (brief description for conversational context)
-    const visionPrompt = `You are Reze (Bomb Devil from Chainsaw Man). You just saw this image from the user's camera. Briefly describe what you see in 1-2 sentences, naturally and casually. Don't say "I see an image of..." — just react naturally like you're looking at someone through a video call.`
-
-    const { execSync } = await import('child_process')
-    const result = execSync(
-      `openclaw agent --message ${JSON.stringify(visionPrompt)} --attachment ${JSON.stringify(framePath)} --json --session-id ${config.openclaw?.sessionId || 'vrm-chat'} 2>/dev/null`,
-      { encoding: 'utf-8', timeout: 30000 }
-    )
-
-    // Parse response
-    const lines = result.split('\n')
-    let jsonStr = ''
-    let braceDepth = 0
-    let inJson = false
-    for (const line of lines) {
-      if (!inJson && line.trim().startsWith('{')) inJson = true
-      if (inJson) {
-        jsonStr += line + '\n'
-        for (const ch of line) {
-          if (ch === '{') braceDepth++
-          if (ch === '}') braceDepth--
-        }
-        if (braceDepth <= 0 && inJson) break
-      }
+// Set up proactive scene change alerts
+visualMemory.setSceneChangeCallback((context: VisualContext) => {
+  console.log(`[VisualMemory] Scene change detected! Notifying clients...`)
+  const msg = JSON.stringify({
+    type: 'scene_change_detected',
+    sceneChanged: true,
+    memorySummary: context.memorySummary,
+    frameCount: context.frameCount,
+    timestamp: Date.now(),
+  })
+  for (const client of clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(msg)
     }
-
-    if (jsonStr) {
-      const parsed = JSON.parse(jsonStr)
-      const text = parsed?.result?.payloads?.[0]?.text || 'I can see you~'
-      console.log(`Vision response: "${text.substring(0, 100)}"`)
-
-      // Broadcast vision context as a subtle system note (not full response)
-      const msg = JSON.stringify({
-        type: 'vision_context',
-        text,
-        timestamp: Date.now()
-      })
-      for (const client of clients) {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(msg)
-        }
-      }
-    }
-
-    // Clean up frame
-    try { unlinkSync(framePath) } catch {}
-  } catch (e: any) {
-    console.error('Vision analysis error:', e.message)
   }
+})
+
+function handleCameraFrame(base64Image: string, _senderWs: WebSocket) {
+  // Just ingest into ring buffer — no AI call per frame
+  const { isDuplicate, sceneChanged } = visualMemory.ingestFrame(base64Image)
+  
+  if (!isDuplicate) {
+    const stats = visualMemory.getStats()
+    console.log(`[VisualMemory] Frame ingested (buffer: ${stats.bufferFrames}, dup: ${isDuplicate}, sceneΔ: ${sceneChanged})`)
+  }
+}
+
+/**
+ * Get visual context for AI (called as tool or on demand)
+ * Returns deduped frames + memory summary for inclusion in AI context
+ */
+async function handleGetVisualContext(reason: string, senderWs: WebSocket) {
+  const context = visualMemory.getVisualContext(reason)
+  
+  senderWs.send(JSON.stringify({
+    type: 'visual_context_response',
+    ...context,
+    timestamp: Date.now(),
+  }))
+
+  return context
+}
+
+/**
+ * Store a visual memory after AI has analyzed a scene
+ */
+function handleStoreVisualMemory(data: {
+  description: string
+  tags?: string[]
+  location?: string
+}) {
+  const context = visualMemory.getVisualContext('store_memory')
+  if (context.currentFrames.length === 0) {
+    console.log('[VisualMemory] No frames to store')
+    return null
+  }
+
+  // Store the most recent frame with the AI's description
+  const record = visualMemory.storeMemory(
+    data.description,
+    context.currentFrames[context.currentFrames.length - 1],
+    undefined,
+    data.tags || [],
+    data.location,
+  )
+  console.log(`[VisualMemory] Stored memory: "${data.description.substring(0, 60)}..."`)
+  return record
 }
 
 // --- Slash command handler (Telegram-style with inline buttons) ---
@@ -1228,11 +1265,62 @@ wss.on('connection', (ws) => {
       return
     }
 
-    // Handle camera_frame — vision analysis via OpenClaw
+    // Handle camera_frame — ingest into visual memory ring buffer
     if (parsed?.type === 'camera_frame' && parsed.image) {
-      handleCameraFrame(parsed.image, ws).catch(e => {
-        console.error('Camera frame handling error:', e.message)
+      handleCameraFrame(parsed.image, ws)
+      return
+    }
+
+    // Handle camera_active — toggle camera state
+    if (parsed?.type === 'camera_active') {
+      visualMemory.setCameraActive(!!parsed.active)
+      // On camera open, immediately get context for initial greeting
+      if (parsed.active) {
+        // Give it a moment to receive first frame
+        setTimeout(async () => {
+          const context = visualMemory.getVisualContext('camera_opened')
+          if (context.frameCount > 0) {
+            ws.send(JSON.stringify({
+              type: 'visual_context_response',
+              reason: 'camera_opened',
+              ...context,
+              timestamp: Date.now(),
+            }))
+          }
+        }, 3000)
+      }
+      return
+    }
+
+    // Handle get_visual_context — AI requests visual info on demand
+    if (parsed?.type === 'get_visual_context') {
+      handleGetVisualContext(parsed.reason || 'user_request', ws).catch(e => {
+        console.error('Visual context error:', e.message)
       })
+      return
+    }
+
+    // Handle store_visual_memory — AI stores a scene description
+    if (parsed?.type === 'store_visual_memory') {
+      const record = handleStoreVisualMemory({
+        description: parsed.description || '',
+        tags: parsed.tags,
+        location: parsed.location,
+      })
+      ws.send(JSON.stringify({
+        type: 'visual_memory_stored',
+        success: !!record,
+        record,
+      }))
+      return
+    }
+
+    // Handle get_visual_stats — debug info
+    if (parsed?.type === 'get_visual_stats') {
+      ws.send(JSON.stringify({
+        type: 'visual_stats',
+        ...visualMemory.getStats(),
+      }))
       return
     }
 
