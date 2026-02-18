@@ -5,6 +5,11 @@ import { join, resolve } from 'path'
 import { randomUUID } from 'crypto'
 import { visualMemory, type VisualContext } from './visual-memory.js'
 import { multimodalMemory } from './multimodal-memory.js'
+import { EntityStore } from './memory/entity-store.js'
+
+// Initialize entity memory store
+const entityStore = new EntityStore()
+entityStore.seed()
 
 // Load config
 const CONFIG_PATH = resolve(import.meta.dirname ?? '.', '..', 'clawatar.config.json')
@@ -851,6 +856,12 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
     }
   }
 
+  // --- Entity memory recall ---
+  const entityContext = entityStore.quickRecall(text)
+  if (entityContext) {
+    console.log(`[entity-memory] Recalled context for: "${text.slice(0, 40)}"`)
+  }
+
   // --- Visual context injection ---
   // If camera is active, check if we should include visual context
   // Triggers: visual keywords in user text, or camera just opened
@@ -881,6 +892,14 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
     }
   } else {
     messages = [{ role: 'user', content: text }]
+  }
+
+  // Prepend entity memory context to user message if available
+  if (entityContext && messages.length > 0) {
+    const lastMsg = messages[messages.length - 1]
+    if (typeof lastMsg.content === 'string') {
+      lastMsg.content = `${entityContext}\n\n${lastMsg.content}`
+    }
   }
 
   /* ── Streaming-audio mode ──────────────────────────────────────── */
@@ -1427,6 +1446,46 @@ wss.on('connection', (ws) => {
         type: 'visual_stats',
         ...visualMemory.getStats(),
       }))
+      return
+    }
+
+    // Handle memory_recall — quick entity recall from text
+    if (parsed?.type === 'memory_recall' && parsed.text) {
+      const context = entityStore.quickRecall(parsed.text)
+      ws.send(JSON.stringify({ type: 'memory_recall_result', context, query: parsed.text }))
+      return
+    }
+
+    // Handle memory_entities — list all known entities
+    if (parsed?.type === 'memory_entities') {
+      const entities = entityStore.listEntities()
+      ws.send(JSON.stringify({ type: 'memory_entities_result', entities }))
+      return
+    }
+
+    // Handle memory_update_entity — create or update an entity
+    if (parsed?.type === 'memory_update_entity') {
+      if (parsed.id) {
+        const updated = entityStore.updateEntity(parsed.id, parsed.data || {})
+        ws.send(JSON.stringify({ type: 'memory_entity_updated', success: !!updated, entity: updated }))
+      } else {
+        const created = entityStore.createEntity({ type: 'person', ...parsed.data })
+        ws.send(JSON.stringify({ type: 'memory_entity_updated', success: true, entity: created }))
+      }
+      return
+    }
+
+    // Handle memory_add_episode — store an episodic memory
+    if (parsed?.type === 'memory_add_episode' && parsed.data) {
+      const episode = entityStore.addEpisode(parsed.data)
+      ws.send(JSON.stringify({ type: 'memory_episode_added', success: true, episode }))
+      return
+    }
+
+    // Handle memory_add_fact — store a semantic fact for an entity
+    if (parsed?.type === 'memory_add_fact' && parsed.entityId && parsed.content) {
+      const fact = entityStore.addSemanticFact(parsed.entityId, parsed.category || 'fact', parsed.content, parsed.sourceId)
+      ws.send(JSON.stringify({ type: 'memory_fact_added', success: true, fact }))
       return
     }
 
