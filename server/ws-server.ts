@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSy
 import { join, resolve } from 'path'
 import { randomUUID } from 'crypto'
 import { visualMemory, type VisualContext } from './visual-memory.js'
+import { multimodalMemory } from './multimodal-memory.js'
 
 // Load config
 const CONFIG_PATH = resolve(import.meta.dirname ?? '.', '..', 'clawatar.config.json')
@@ -352,7 +353,7 @@ async function twoPhaseStreamingPipeline(
   broadcastFn: (audioUrl: string, text: string, isAck: boolean) => void,
 ): Promise<{ text: string; audioUrl: string; firstAudioMs: number; ackSent: boolean }> {
   // Prepend voice-mode system prompt
-  messages = [{ role: 'system', content: VOICE_SYSTEM_PROMPT }, ...messages]
+  messages = [{ role: 'system', content: getVoiceSystemPrompt() }, ...messages]
   const startTime = Date.now()
   let ackSent = false
 
@@ -463,7 +464,7 @@ async function streamingAudioPipeline(
   sessionKey: string,
   broadcastToClients: (msg: any) => void,
 ): Promise<{ text: string; firstChunkMs: number }> {
-  messages = [{ role: 'system', content: VOICE_SYSTEM_PROMPT }, ...messages]
+  messages = [{ role: 'system', content: getVoiceSystemPrompt() }, ...messages]
   const startTime = Date.now()
   const sid = randomUUID()
   let fullText = ''
@@ -643,12 +644,30 @@ async function streamingAudioPipeline(
  * acknowledgment BEFORE calling any tool. This ensures the SSE stream
  * emits tokens immediately, eliminating silent gaps during tool execution.
  */
-const VOICE_SYSTEM_PROMPT = `You are in VOICE MODE — your response will be spoken aloud via TTS.
+const VOICE_SYSTEM_PROMPT_BASE = `You are in VOICE MODE — your response will be spoken aloud via TTS.
 Critical rules:
 1. ALWAYS say a brief phrase BEFORE using any tool (e.g. "让我看看～", "我查一下哦"). This gives immediate audio feedback.
 2. NO markdown (**bold**, # headers, | tables, \`code\`, - bullets). TTS reads these literally and it sounds terrible.
 3. Keep it SHORT — 2-4 sentences max unless asked for detail. This is a conversation, not an essay.
-4. Speak naturally, like talking to a friend. No emoji, no URLs.`
+4. Speak naturally, like talking to a friend. No emoji, no URLs.
+5. Use your multimodal memory to be proactive — if you notice something changed or remember a preference, mention it naturally.`
+
+/**
+ * Build voice system prompt with dynamic multimodal memory context.
+ */
+function getVoiceSystemPrompt(): string {
+  const memoryContext = multimodalMemory.buildContextForAI()
+  if (!memoryContext || memoryContext.length < 20) return VOICE_SYSTEM_PROMPT_BASE
+
+  return `${VOICE_SYSTEM_PROMPT_BASE}
+
+--- Multimodal Memory ---
+${memoryContext}
+--- End Memory ---`
+}
+
+// Keep a static reference for backward compatibility
+const VOICE_SYSTEM_PROMPT = VOICE_SYSTEM_PROMPT_BASE
 
 /**
  * Full streaming pipeline with voice-mode system prompt.
@@ -667,7 +686,7 @@ async function streamingPipeline(
   opts?: { broadcastAck?: (audioUrl: string, text: string) => void; inputText?: string },
 ): Promise<{ text: string; audioUrl: string; firstChunkMs: number; ackSent: boolean }> {
   // Prepend voice-mode system prompt
-  messages = [{ role: 'system', content: VOICE_SYSTEM_PROMPT }, ...messages]
+  messages = [{ role: 'system', content: getVoiceSystemPrompt() }, ...messages]
   let fullText = ''
   let ackSent = false
 
@@ -804,6 +823,19 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
   console.log(`User said: "${text}" (from device: ${sourceDevice || 'unknown'})`)
   const startTime = Date.now()
   const audioDevice = sourceDevice || undefined
+
+  // Record in multimodal memory (non-blocking)
+  // Simple mood detection from text patterns (fast, no API call)
+  const moodPatterns: [RegExp, string][] = [
+    [/哈哈|lol|😂|太好了|开心|happy|nice|awesome|棒/i, 'happy'],
+    [/累|tired|困|sleepy|好烦|唉/i, 'tired'],
+    [/太棒|厉害|wow|amazing|excited|激动|兴奋/i, 'excited'],
+    [/难过|sad|不开心|伤心|💔/i, 'sad'],
+    [/生气|angry|烦死|fuck|shit|操/i, 'angry'],
+    [/为什么|怎么|好奇|what|why|how|想知道/i, 'curious'],
+  ]
+  const detectedMood = moodPatterns.find(([re]) => re.test(text))?.[1]
+  multimodalMemory.addAudioMemory(text, detectedMood || undefined)
 
   // Broadcast helper
   const broadcast = (msg: any) => {
@@ -1012,11 +1044,66 @@ function broadcastDeviceList() {
   }
 }
 
+// --- Multimodal Memory: Setup ---
+
+// AI analysis callback for multimodal memory (uses OpenClaw Gateway)
+multimodalMemory.setAnalyzeCallback(async (params) => {
+  try {
+    const messages: any[] = []
+
+    if (params.type === 'caption_scene' && params.images?.length) {
+      // Vision analysis: send image + context to Gateway
+      const content: any[] = [
+        { type: 'text', text: params.context },
+        ...params.images.map(img => ({
+          type: 'image_url',
+          image_url: { url: `data:image/jpeg;base64,${img}` },
+        })),
+      ]
+      messages.push(
+        { role: 'system', content: 'You are a visual memory system. Describe scenes concisely for memory storage. Focus on people, activities, location, notable details. 1-2 sentences max. No "I see" prefix.' },
+        { role: 'user', content },
+      )
+    } else if (params.type === 'extract_semantic') {
+      messages.push(
+        { role: 'system', content: 'You extract patterns and knowledge from observations. Return a JSON array of strings with new insights. Be specific and factual.' },
+        { role: 'user', content: params.context },
+      )
+    } else if (params.type === 'detect_mood') {
+      messages.push(
+        { role: 'system', content: 'Detect the speaker mood from their speech. Return one word: happy, tired, excited, neutral, sad, angry, curious, frustrated.' },
+        { role: 'user', content: params.context },
+      )
+    }
+
+    if (messages.length === 0) return ''
+
+    const resp = await fetch(`http://127.0.0.1:${GATEWAY_PORT}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+        'x-openclaw-agent-id': 'main',
+        'x-openclaw-session-key': 'multimodal-memory',
+      },
+      body: JSON.stringify({ model: 'openclaw', messages }),
+    })
+    if (!resp.ok) return ''
+    const data = await resp.json() as any
+    return data?.choices?.[0]?.message?.content || ''
+  } catch (e: any) {
+    console.error('[MultimodalMemory] AI callback error:', e.message)
+    return ''
+  }
+})
+
 // --- Visual Memory: Camera frame ingestion ---
 
-// Set up proactive scene change alerts
+// Set up proactive scene change alerts + multimodal memory integration
 visualMemory.setSceneChangeCallback((context: VisualContext) => {
-  console.log(`[VisualMemory] Scene change detected! Notifying clients...`)
+  console.log(`[VisualMemory] Scene change detected! Notifying clients + triggering memory...`)
+
+  // Notify frontend clients
   const msg = JSON.stringify({
     type: 'scene_change_detected',
     sceneChanged: true,
@@ -1029,6 +1116,10 @@ visualMemory.setSceneChangeCallback((context: VisualContext) => {
       client.send(msg)
     }
   }
+
+  // Trigger multimodal memory auto-captioning
+  multimodalMemory.onSceneChange(context).catch(e =>
+    console.error('[MultimodalMemory] Scene change processing error:', e.message))
 })
 
 async function handleCameraFrame(base64Image: string, _senderWs: WebSocket) {
@@ -1327,6 +1418,35 @@ wss.on('connection', (ws) => {
         type: 'visual_stats',
         ...visualMemory.getStats(),
       }))
+      return
+    }
+
+    // Handle get_memory_stats — full multimodal memory stats
+    if (parsed?.type === 'get_memory_stats') {
+      ws.send(JSON.stringify({
+        type: 'memory_stats',
+        ...multimodalMemory.getStats(),
+      }))
+      return
+    }
+
+    // Handle get_memory_context — AI-readable memory context
+    if (parsed?.type === 'get_memory_context') {
+      ws.send(JSON.stringify({
+        type: 'memory_context',
+        context: multimodalMemory.buildContextForAI(),
+      }))
+      return
+    }
+
+    // Handle add_semantic_memory — manually add a fact/preference
+    if (parsed?.type === 'add_semantic_memory' && parsed.knowledge) {
+      multimodalMemory.addSemantic({
+        knowledge: parsed.knowledge,
+        entityIds: parsed.entityIds || ['user'],
+        source: parsed.source || 'conversation',
+      })
+      ws.send(JSON.stringify({ type: 'semantic_memory_added', success: true }))
       return
     }
 
