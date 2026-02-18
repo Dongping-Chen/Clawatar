@@ -56,6 +56,37 @@ export interface VisualContext {
   lastMemory: VisualMemoryRecord | null
 }
 
+export interface VisualSearchResult {
+  id: string
+  timestamp: string
+  description: string
+  thumbnailPath: string
+  tags: string[]
+  relevanceScore: number
+}
+
+function tokenizeSearchQuery(query: string): string[] {
+  const trimmed = query.trim()
+  if (!trimmed) return []
+
+  const tokens = new Set<string>()
+
+  // English words (case-insensitive)
+  const englishWords = trimmed.toLowerCase().match(/[a-z0-9]+/g) || []
+  for (const word of englishWords) {
+    if (word.length > 0) tokens.add(word)
+  }
+
+  // Chinese characters + adjacent bigrams
+  const chineseChars = trimmed.match(/[\u4e00-\u9fff]/g) || []
+  for (const ch of chineseChars) tokens.add(ch)
+  for (let i = 0; i < chineseChars.length - 1; i++) {
+    tokens.add(chineseChars[i] + chineseChars[i + 1])
+  }
+
+  return Array.from(tokens)
+}
+
 // ============ Perceptual Hash (via sharp) ============
 
 /**
@@ -301,6 +332,48 @@ class VisualMemoryStore {
   }
 
   /**
+   * Search visual memory by keyword matching (Chinese + English tokens).
+   * Returns scored text-only results with thumbnail file paths.
+   */
+  search(query: string, limit: number = 5): VisualSearchResult[] {
+    this.load()
+
+    const tokens = tokenizeSearchQuery(query)
+    if (tokens.length === 0 || this.records.length === 0) return []
+
+    const safeLimit = Math.max(1, limit)
+    const scored: VisualSearchResult[] = []
+
+    for (let i = 0; i < this.records.length; i++) {
+      const record = this.records[i]
+      const tags = Array.isArray(record.tags) ? record.tags : []
+      const searchableText = `${record.description || ''} ${tags.join(' ')}`.toLowerCase()
+
+      let relevanceScore = 0
+      for (const token of tokens) {
+        if (searchableText.includes(token.toLowerCase())) {
+          relevanceScore += 1
+        }
+      }
+
+      if (relevanceScore > 0) {
+        scored.push({
+          id: `v${String(i + 1).padStart(3, '0')}`,
+          timestamp: record.ts,
+          description: record.description,
+          thumbnailPath: join(THUMBNAILS_DIR, record.thumbnail),
+          tags,
+          relevanceScore,
+        })
+      }
+    }
+
+    return scored
+      .sort((a, b) => b.relevanceScore - a.relevanceScore || b.timestamp.localeCompare(a.timestamp))
+      .slice(0, safeLimit)
+  }
+
+  /**
    * Get a thumbnail as base64
    */
   getThumbnailBase64(filename: string): string | null {
@@ -464,6 +537,13 @@ export class VisualMemoryManager {
    */
   getThumbnail(filename: string): string | null {
     return this.memoryStore.getThumbnailBase64(filename)
+  }
+
+  /**
+   * Search stored visual memories by keyword.
+   */
+  search(query: string, limit: number = 5): VisualSearchResult[] {
+    return this.memoryStore.search(query, limit)
   }
 
   /**

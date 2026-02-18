@@ -4,10 +4,10 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSy
 import { join, resolve } from 'path'
 import { randomUUID } from 'crypto'
 import sharp from 'sharp'
-import { visualMemory, type VisualContext } from './visual-memory.js'
+import { visualMemory, type VisualContext, type VisualSearchResult } from './visual-memory.js'
 import { multimodalMemory } from './multimodal-memory.js'
 import { EntityStore } from './memory/entity-store.js'
-import { VisionLog } from './memory/vision-log.js'
+import { VisionLog, type VisionSearchResult } from './memory/vision-log.js'
 import { FacePersistenceTracker } from './memory/face-tracker.js'
 import { NewSpeakerDetector } from './memory/speaker-tracker.js'
 
@@ -833,6 +833,88 @@ async function askOpenClaw(userText: string): Promise<string> {
   }
 }
 
+interface VisualMemoryPromptEntry {
+  id: string
+  timestamp: string
+  description: string
+  tags: string[]
+  thumbnailPath: string
+  score: number
+}
+
+function formatVisualMemoryTimestamp(timestamp: string): string {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return timestamp
+  return date
+    .toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+    .replace(',', '')
+}
+
+function buildVisualMemoryContext(
+  visualResults: VisualSearchResult[],
+  visionResults: VisionSearchResult[],
+  limit: number = 5,
+): string {
+  const merged: VisualMemoryPromptEntry[] = []
+
+  for (const result of visualResults) {
+    merged.push({
+      id: result.id,
+      timestamp: result.timestamp,
+      description: result.description,
+      tags: Array.isArray(result.tags) ? result.tags : [],
+      thumbnailPath: result.thumbnailPath,
+      score: result.relevanceScore,
+    })
+  }
+
+  for (const result of visionResults) {
+    merged.push({
+      id: result.id,
+      timestamp: result.record.timestamp,
+      description: result.record.description,
+      tags: Array.isArray(result.record.tags) ? result.record.tags : [],
+      thumbnailPath: result.thumbnailPath,
+      score: result.score,
+    })
+  }
+
+  if (merged.length === 0) return ''
+
+  const deduped = new Map<string, VisualMemoryPromptEntry>()
+  for (const item of merged) {
+    const key = `${item.thumbnailPath}|${item.description}`
+    const existing = deduped.get(key)
+    if (!existing || item.score > existing.score) {
+      deduped.set(key, item)
+    }
+  }
+
+  const topResults = Array.from(deduped.values())
+    .sort((a, b) => b.score - a.score || b.timestamp.localeCompare(a.timestamp))
+    .slice(0, Math.max(1, limit))
+
+  if (topResults.length === 0) return ''
+
+  const lines: string[] = ['[Visual Memory]']
+  for (const item of topResults) {
+    const time = formatVisualMemoryTimestamp(item.timestamp)
+    const tags = item.tags.length > 0 ? item.tags.join(', ') : 'none'
+    lines.push(`#${item.id} ${time} — ${item.description} [tags: ${tags}] (thumbnail: ${item.thumbnailPath})`)
+  }
+  lines.push('')
+  lines.push('If you need to see a specific image, use the image tool with the thumbnail path above.')
+
+  return lines.join('\n')
+}
+
 /**
  * Analyze camera frames using OpenAI Vision API directly.
  * Gateway doesn't support multimodal content, so we call OpenAI directly.
@@ -871,6 +953,14 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
     console.log(`[entity-memory] Recalled context for: "${text.slice(0, 40)}"`)
   }
 
+  // --- Visual memory search (Tier 1: text only, cheap) ---
+  const visualSearchResults = visualMemory.search(text, 3)
+  const visionSearchResults = visionLog.searchWithScoring(text, 3)
+  const visualMemoryContext = buildVisualMemoryContext(visualSearchResults, visionSearchResults, 5)
+  if (visualMemoryContext) {
+    console.log(`[visual-memory] Recalled ${visualSearchResults.length + visionSearchResults.length} visual records for: "${text.slice(0, 40)}"`)
+  }
+
   // --- Visual context injection ---
   // If camera is active, check if we should include visual context
   // Triggers: visual keywords in user text, or camera just opened
@@ -902,11 +992,20 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
     messages = [{ role: 'user', content: text }]
   }
 
-  // Prepend entity memory context to user message if available
-  if (entityContext && messages.length > 0) {
+  // Prepend retrieved memory context to user message.
+  // Order: Visual Memory -> Entity Memory -> User text
+  if (messages.length > 0) {
     const lastMsg = messages[messages.length - 1]
     if (typeof lastMsg.content === 'string') {
-      lastMsg.content = `${entityContext}\n\n${lastMsg.content}`
+      const contextBlocks: string[] = []
+      if (visualMemoryContext) contextBlocks.push(visualMemoryContext)
+      if (entityContext) contextBlocks.push(entityContext)
+      if (contextBlocks.length > 0) {
+        const userBlock = lastMsg.content.includes('User says:')
+          ? lastMsg.content
+          : `User says: ${lastMsg.content}`
+        lastMsg.content = `${contextBlocks.join('\n\n')}\n\n${userBlock}`
+      }
     }
   }
 
@@ -936,19 +1035,42 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
   ]
   for (const pattern of introPatterns) {
     const match = text.match(pattern)
-    if (match) {
-      const name = match[1].trim()
-      hints.push(`[CONTEXT: The user is introducing someone named "${name}". Record their face and voice from the current camera/audio. Confirm you will remember them.]`)
-      break
+    if (!match) continue
+
+    const name = match[1].trim()
+    if (!name) continue
+
+    const existing = entityStore.findByName(name)
+    if (existing) {
+      entityStore.updateEntity(existing.id, {
+        lastSeen: new Date().toISOString(),
+        seenCount: existing.seenCount + 1,
+      })
+    } else {
+      const created = entityStore.createEntity({
+        type: 'person',
+        name,
+        aliases: [],
+      })
+      console.log(`[entity-memory] Created introduced entity: ${created.name || created.id}`)
     }
+
+    hints.push(`[CONTEXT: The user is introducing someone named "${name}". Record their face and voice from the current camera/audio. Confirm you will remember them.]`)
+    break
   }
 
-  // Prepend hints to user message
+  // Inject hints before the "User says" block (after memory context blocks if present)
   if (hints.length > 0 && messages.length > 0) {
     const hintBlock = hints.join('\n') + '\n\n'
     const lastMsg = messages[messages.length - 1]
     if (typeof lastMsg.content === 'string') {
-      lastMsg.content = hintBlock + lastMsg.content
+      const marker = 'User says:'
+      const markerIndex = lastMsg.content.indexOf(marker)
+      if (markerIndex >= 0) {
+        lastMsg.content = `${lastMsg.content.slice(0, markerIndex)}${hintBlock}${lastMsg.content.slice(markerIndex)}`
+      } else {
+        lastMsg.content = hintBlock + lastMsg.content
+      }
     }
     console.log(`[hints] Injected ${hints.length} new-person hints`)
   }
@@ -1606,20 +1728,6 @@ wss.on('connection', (ws) => {
         const created = entityStore.createEntity({ type: 'person', ...parsed.data })
         ws.send(JSON.stringify({ type: 'memory_entity_updated', success: true, entity: created }))
       }
-      return
-    }
-
-    // Handle memory_add_episode — store an episodic memory
-    if (parsed?.type === 'memory_add_episode' && parsed.data) {
-      const episode = entityStore.addEpisode(parsed.data)
-      ws.send(JSON.stringify({ type: 'memory_episode_added', success: true, episode }))
-      return
-    }
-
-    // Handle memory_add_fact — store a semantic fact for an entity
-    if (parsed?.type === 'memory_add_fact' && parsed.entityId && parsed.content) {
-      const fact = entityStore.addSemanticFact(parsed.entityId, parsed.category || 'fact', parsed.content, parsed.sourceId)
-      ws.send(JSON.stringify({ type: 'memory_fact_added', success: true, fact }))
       return
     }
 

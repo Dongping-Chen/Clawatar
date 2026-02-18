@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { isAbsolute, join } from 'path'
 
 export interface VisionRecord {
   timestamp: string
@@ -11,12 +11,43 @@ export interface VisionRecord {
   source: 'camera' | 'meeting' | 'manual'
 }
 
+export interface VisionSearchResult {
+  id: string
+  record: VisionRecord
+  thumbnailPath: string
+  score: number
+}
+
+function tokenizeSearchQuery(query: string): string[] {
+  const trimmed = query.trim()
+  if (!trimmed) return []
+
+  const tokens = new Set<string>()
+
+  // English words
+  const englishWords = trimmed.toLowerCase().match(/[a-z0-9]+/g) || []
+  for (const word of englishWords) {
+    if (word.length > 0) tokens.add(word)
+  }
+
+  // Chinese chars + adjacent bigrams
+  const chineseChars = trimmed.match(/[\u4e00-\u9fff]/g) || []
+  for (const ch of chineseChars) tokens.add(ch)
+  for (let i = 0; i < chineseChars.length - 1; i++) {
+    tokens.add(chineseChars[i] + chineseChars[i + 1])
+  }
+
+  return Array.from(tokens)
+}
+
 export class VisionLog {
   private logPath: string
+  private baseDir: string
 
   constructor(baseDir?: string) {
     const dir = baseDir || join(process.env.HOME || '', '.openclaw', 'workspace', 'memory', 'visual')
     mkdirSync(dir, { recursive: true })
+    this.baseDir = dir
     this.logPath = join(dir, 'vision-records.jsonl')
   }
 
@@ -35,12 +66,44 @@ export class VisionLog {
   }
 
   search(query: string): VisionRecord[] {
-    const q = query.trim().toLowerCase()
-    if (!q) return []
-    return this.readAll().filter(r =>
-      r.description.toLowerCase().includes(q) ||
-      r.tags.some(t => t.toLowerCase().includes(q)),
-    )
+    return this.searchWithScoring(query).map(result => result.record)
+  }
+
+  searchWithScoring(query: string, limit: number = 5): VisionSearchResult[] {
+    const tokens = tokenizeSearchQuery(query)
+    if (tokens.length === 0) return []
+
+    const records = this.readAll()
+    if (records.length === 0) return []
+
+    const safeLimit = Math.max(1, limit)
+    const scored: VisionSearchResult[] = []
+
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i]
+      const tags = Array.isArray(record.tags) ? record.tags : []
+      const searchableText = `${record.description || ''} ${tags.join(' ')}`.toLowerCase()
+
+      let score = 0
+      for (const token of tokens) {
+        if (searchableText.includes(token.toLowerCase())) {
+          score += 1
+        }
+      }
+
+      if (score > 0) {
+        scored.push({
+          id: `v${String(i + 1).padStart(3, '0')}`,
+          record,
+          thumbnailPath: this.resolveThumbnailPath(record.thumbnailPath),
+          score,
+        })
+      }
+    }
+
+    return scored
+      .sort((a, b) => b.score - a.score || b.record.timestamp.localeCompare(a.record.timestamp))
+      .slice(0, safeLimit)
   }
 
   getByEntity(entityId: string): VisionRecord[] {
@@ -70,6 +133,11 @@ export class VisionLog {
       })
 
     return `Recent visual observations:\n${lines.join('\n')}`
+  }
+
+  private resolveThumbnailPath(pathValue: string): string {
+    if (!pathValue) return join(this.baseDir, 'thumbnails')
+    return isAbsolute(pathValue) ? pathValue : join(this.baseDir, pathValue)
   }
 
   private readAll(): VisionRecord[] {
