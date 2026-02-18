@@ -136,24 +136,30 @@ class FrameRingBuffer {
   }
 
   async push(base64: string): Promise<{ hash: string; isDuplicate: boolean; sceneChanged: boolean }> {
-    const buffer = Buffer.from(base64, 'base64')
+    // Strip data URI prefix if present (e.g. "data:image/jpeg;base64,...")
+    const raw = base64.includes(',') ? base64.split(',')[1] : base64
+    const buffer = Buffer.from(raw, 'base64')
     const hash = await computePerceptualHash(buffer)
     
     // Check if duplicate of most recent frame
     const lastFrame = this.frames.length > 0 ? this.frames[this.frames.length - 1] : null
     const isDuplicate = lastFrame ? hammingDistance(hash, lastFrame.hash) < SCENE_CHANGE_THRESHOLD : false
     
-    // Check for scene change against recent frames (compare to 3 most recent)
+    // Skip duplicate frames — don't waste ring buffer space
+    if (isDuplicate) {
+      return { hash, isDuplicate: true, sceneChanged: false }
+    }
+
+    // Check for scene change: compare to most recent frame (≥1 frame needed)
     let sceneChanged = false
-    if (this.frames.length >= 3) {
-      const recentHashes = this.frames.slice(-3).map(f => f.hash)
-      const avgDistance = recentHashes.reduce((sum, h) => sum + hammingDistance(hash, h), 0) / recentHashes.length
-      sceneChanged = avgDistance >= SCENE_CHANGE_THRESHOLD
+    if (this.frames.length >= 1) {
+      const lastHash = this.frames[this.frames.length - 1].hash
+      sceneChanged = hammingDistance(hash, lastHash) >= SCENE_CHANGE_THRESHOLD
     }
 
     const entry: FrameEntry = {
       timestamp: Date.now(),
-      base64,
+      base64: raw,  // Store pure base64 without data URI prefix
       hash,
       byteSize: buffer.length,
     }

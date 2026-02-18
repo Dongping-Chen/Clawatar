@@ -819,6 +819,53 @@ async function askOpenClaw(userText: string): Promise<string> {
   }
 }
 
+/**
+ * Analyze camera frames using OpenAI Vision API directly.
+ * Gateway doesn't support multimodal content, so we call OpenAI directly.
+ * Returns a text description of what's visible in the frames.
+ */
+async function analyzeFramesVision(frames: string[], userQuery: string): Promise<string> {
+  // Get OpenAI API key (same as Whisper)
+  const apiKey = process.env.OPENAI_API_KEY || (() => {
+    try {
+      const configPath = join(process.env.HOME || '', '.openclaw', 'openclaw.json')
+      return JSON.parse(readFileSync(configPath, 'utf-8')).skills?.entries?.['openai-whisper-api']?.apiKey || ''
+    } catch { return '' }
+  })()
+
+  if (!apiKey) throw new Error('No OpenAI API key available for vision')
+
+  const content: any[] = [
+    {
+      type: 'text',
+      text: `Describe what you see in this camera image. The user asks: "${userQuery}". Be concise (2-3 sentences). Describe people, objects, environment, and anything notable.`,
+    },
+  ]
+  for (const frame of frames) {
+    content.push({
+      type: 'image_url',
+      image_url: { url: `data:image/jpeg;base64,${frame}`, detail: 'low' },
+    })
+  }
+
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini', // Fast + cheap for simple vision tasks
+      messages: [{ role: 'user', content }],
+      max_tokens: 200,
+    }),
+  })
+
+  if (!resp.ok) throw new Error(`Vision API ${resp.status}: ${await resp.text()}`)
+  const json = await resp.json() as any
+  return json.choices?.[0]?.message?.content || '(no description)'
+}
+
 async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?: string) {
   console.log(`User said: "${text}" (from device: ${sourceDevice || 'unknown'})`)
   const startTime = Date.now()
@@ -855,25 +902,30 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
   if (visualMemory.isCameraActive() && visualKeywords.test(text)) {
     const ctx = visualMemory.getVisualContext('user_visual_request')
     if (ctx.currentFrames.length > 0) {
-      // Build multimodal user message: text + images
-      const content: any[] = [{ type: 'text', text }]
-      // Include up to 2 deduped frames (save tokens)
+      // Gateway doesn't support multimodal (image_url) content —
+      // analyze frames via direct OpenAI Vision API, inject description as text
       const framesToSend = ctx.currentFrames.slice(-2)
-      for (const frame of framesToSend) {
-        content.push({
-          type: 'image_url',
-          image_url: { url: `data:image/jpeg;base64,${frame}` },
-        })
+      let sceneDescription = ''
+      try {
+        sceneDescription = await analyzeFramesVision(framesToSend, text)
+        console.log(`[visual] Vision analysis: "${sceneDescription.slice(0, 100)}"`)
+      } catch (e: any) {
+        console.error(`[visual] Vision API error: ${e.message}`)
+        sceneDescription = '(Vision analysis failed — could not process camera frames)'
       }
-      // Add visual memory context as system info
-      if (ctx.memorySummary && ctx.memorySummary !== '(no visual memories yet)') {
-        content.unshift({
-          type: 'text',
-          text: `[Visual memory - previous observations]\n${ctx.memorySummary}\n[Current: ${ctx.sceneChanged ? 'scene has changed since last memory' : 'same scene as last memory'}]`,
-        })
+
+      // Build enriched text prompt with visual description
+      let enrichedText = text
+      if (sceneDescription) {
+        enrichedText = `[CAMERA VIEW — what I currently see]\n${sceneDescription}\n`
+        if (ctx.memorySummary && ctx.memorySummary !== '(no visual memories yet)') {
+          enrichedText += `[Previous visual observations]\n${ctx.memorySummary}\n`
+        }
+        enrichedText += `[Scene changed: ${ctx.sceneChanged ? 'yes' : 'no'}]\n\n`
+        enrichedText += `User says: ${text}`
       }
-      messages = [{ role: 'user', content }]
-      console.log(`[visual] Injected ${framesToSend.length} frames + memory into context (sceneΔ: ${ctx.sceneChanged})`)
+      messages = [{ role: 'user', content: enrichedText }]
+      console.log(`[visual] Injected vision description into context (${sceneDescription.length} chars)`)
     } else {
       messages = [{ role: 'user', content: text }]
     }
