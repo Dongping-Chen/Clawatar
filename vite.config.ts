@@ -30,7 +30,14 @@ function serveConfig(): Plugin {
 }
 
 export default defineConfig({
-  server: { port: vitePort },
+  server: {
+    host: '0.0.0.0',
+    port: vitePort,
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: vitePort,
+  },
   build: { target: 'ES2020' },
   plugins: [serveConfig()],
 })

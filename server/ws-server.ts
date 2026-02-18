@@ -3,6 +3,7 @@ import { createServer } from 'http'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { randomUUID } from 'crypto'
+import { networkInterfaces } from 'os'
 import sharp from 'sharp'
 import { visualMemory, type VisualContext, type VisualSearchResult } from './visual-memory.js'
 import { multimodalMemory } from './multimodal-memory.js'
@@ -25,8 +26,10 @@ const CONFIG_PATH = resolve(import.meta.dirname ?? '.', '..', 'clawatar.config.j
 let config: any = {}
 try { config = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) } catch {}
 
+const VITE_PORT = config.server?.vitePort || 3000
 const WS_PORT = config.server?.wsPort || 8765
 const AUDIO_PORT = config.server?.audioPort || 8866
+const SERVER_HOST = '0.0.0.0'
 const AUDIO_CACHE_DIR = resolve(import.meta.dirname ?? '.', '_audio_cache')
 const MAX_CACHE_FILES = 64
 
@@ -44,6 +47,48 @@ function getApiKey(): string {
 }
 
 const API_KEY = getApiKey()
+
+function getLocalNetworkIPs(): string[] {
+  const interfaces = networkInterfaces()
+  const ips = new Set<string>()
+
+  for (const iface of Object.values(interfaces)) {
+    if (!iface) continue
+    for (const addr of iface) {
+      if (addr.family !== 'IPv4' || addr.internal) continue
+      ips.add(addr.address)
+    }
+  }
+
+  return Array.from(ips)
+}
+
+function getPrimaryNetworkIP(): string | null {
+  const localIPs = getLocalNetworkIPs()
+  if (localIPs.length === 0) return null
+
+  const preferred = localIPs.find(ip => ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.'))
+  return preferred || localIPs[0]
+}
+
+function getAudioBaseURL(): string {
+  const host = process.env.CLAWATAR_PUBLIC_HOST || getPrimaryNetworkIP() || 'localhost'
+  return `http://${host}:${actualAudioPort}`
+}
+
+function logNetworkEndpoints() {
+  const localIPs = getLocalNetworkIPs()
+  if (localIPs.length === 0) {
+    console.log(`🌐 VRM Viewer: http://localhost:${VITE_PORT}`)
+    console.log(`🔌 WebSocket: ws://localhost:${WS_PORT}`)
+    return
+  }
+
+  for (const ip of localIPs) {
+    console.log(`🌐 VRM Viewer: http://${ip}:${VITE_PORT}`)
+    console.log(`🔌 WebSocket:  ws://${ip}:${WS_PORT}`)
+  }
+}
 
 // Ensure cache dir
 mkdirSync(AUDIO_CACHE_DIR, { recursive: true })
@@ -130,13 +175,13 @@ const BRIDGE_PORT = config.server?.bridgePort || 8867
 bridgeServer.on('error', (err: any) => {
   if (err.code === 'EADDRINUSE') {
     console.log(`Bridge port ${BRIDGE_PORT} in use, trying ${BRIDGE_PORT + 1}...`)
-    bridgeServer.listen(BRIDGE_PORT + 1)
+    bridgeServer.listen(BRIDGE_PORT + 1, SERVER_HOST)
   } else {
     console.error('Bridge server error:', err)
   }
 })
 
-bridgeServer.listen(BRIDGE_PORT, () => {
+bridgeServer.listen(BRIDGE_PORT, SERVER_HOST, () => {
   console.log(`Bridge HTTP server on http://localhost:${BRIDGE_PORT}`)
 })
 
@@ -144,14 +189,14 @@ audioServer.on('error', (err: any) => {
   if (err.code === 'EADDRINUSE') {
     console.log(`Port ${actualAudioPort} in use, trying ${actualAudioPort + 1}...`)
     actualAudioPort++
-    audioServer.listen(actualAudioPort)
+    audioServer.listen(actualAudioPort, SERVER_HOST)
   } else {
     console.error('Audio server error:', err)
   }
 })
 
-audioServer.listen(AUDIO_PORT, () => {
-  console.log(`Audio HTTP server on http://localhost:${actualAudioPort}`)
+audioServer.listen(AUDIO_PORT, SERVER_HOST, () => {
+  console.log(`Audio HTTP server on ${getAudioBaseURL()}`)
 })
 
 // --- TTS generation ---
@@ -182,7 +227,7 @@ async function generateTTS(text: string): Promise<string> {
   const fileName = `${randomUUID()}.mp3`
   writeFileSync(join(AUDIO_CACHE_DIR, fileName), buffer)
   pruneCache()
-  return `http://localhost:${actualAudioPort}/audio/${fileName}`
+  return `${getAudioBaseURL()}/audio/${fileName}`
 }
 
 function pruneCache() {
@@ -341,7 +386,7 @@ async function streamingTTS(sentences: AsyncIterable<string>): Promise<{ audioUr
       const fileName = `${randomUUID()}.mp3`
       writeFileSync(join(AUDIO_CACHE_DIR, fileName), combined)
       pruneCache()
-      const audioUrl = `http://localhost:${actualAudioPort}/audio/${fileName}`
+      const audioUrl = `${getAudioBaseURL()}/audio/${fileName}`
       resolve({ audioUrl, firstChunkMs: (firstChunkTime || Date.now()) - startTime })
     })
 
@@ -825,8 +870,8 @@ async function askOpenClaw(userText: string): Promise<string> {
         }),
       })
       if (resp.ok) {
-        const data = await resp.json()
-        return data?.reply || data?.text || data?.message || 'I couldn\'t process that.'
+        const data = await resp.json() as Record<string, unknown>
+        return (data?.reply || data?.text || data?.message || 'I couldn\'t process that.') as string
       }
     } catch {}
     throw e
@@ -1530,7 +1575,7 @@ function handleSlashCommand(text: string): any | null {
 }
 
 // --- WebSocket server ---
-const wss = new WebSocketServer({ port: WS_PORT })
+const wss = new WebSocketServer({ port: WS_PORT, host: SERVER_HOST })
 const clients = new Set<WebSocket>()
 
 wss.on('connection', (ws) => {
@@ -1941,7 +1986,8 @@ wss.on('connection', (ws) => {
   })
 })
 
-console.log(`WebSocket server running on ws://localhost:${WS_PORT}`)
+console.log(`WebSocket server running on ws://0.0.0.0:${WS_PORT}`)
+logNetworkEndpoints()
 
 // stdin relay
 process.stdin.setEncoding('utf-8')

@@ -30,6 +30,7 @@
     "start": "node scripts/start.mjs",
     "meeting": "tsx virtual-meeting/meeting-bridge-v3.ts",
     "build": "vite build",
+    "serve": "vite preview",
     "catalog": "node scripts/generate-catalog.mjs"
   },
   "dependencies": {
