@@ -16,7 +16,7 @@
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, unlinkSync, appendFileSync } from 'fs'
 import { join } from 'path'
-import { createHash } from 'crypto'
+import sharp from 'sharp'
 
 // ============ Config ============
 
@@ -56,48 +56,54 @@ export interface VisualContext {
   lastMemory: VisualMemoryRecord | null
 }
 
-// ============ Perceptual Hash ============
+// ============ Perceptual Hash (via sharp) ============
 
 /**
- * Compute a simple perceptual hash from a JPEG buffer.
- * Since we're in Node.js without sharp/canvas, we use a luminance-based
- * approach on the raw JPEG data as a fingerprint.
- * 
- * This is a simplified "average hash" — works well enough for scene dedup.
- * For production, could upgrade to sharp-based DCT hash.
+ * Compute a perceptual hash using sharp.
+ * Resize to 8x8 grayscale → compare each pixel to average → 64-bit hash.
+ * This is the "average hash" (aHash) algorithm — fast and effective for scene dedup.
+ * ~2-5ms per frame thanks to sharp's native pipeline.
  */
-function computePerceptualHash(jpegBuffer: Buffer): string {
-  // Use chunks of the JPEG data to create a spatial fingerprint
-  // We sample 64 evenly-spaced positions and compare to average
-  const len = jpegBuffer.length
-  if (len < 128) return '0000000000000000'
-  
-  const sampleCount = PHASH_SIZE * PHASH_SIZE  // 64 samples
-  const step = Math.floor(len / sampleCount)
-  const samples: number[] = []
-  
-  for (let i = 0; i < sampleCount; i++) {
-    // Sample byte value at evenly-spaced positions (skip JPEG headers)
-    const offset = Math.min(Math.floor(len * 0.1) + i * step, len - 1)
-    samples.push(jpegBuffer[offset])
+async function computePerceptualHash(jpegBuffer: Buffer): Promise<string> {
+  try {
+    // Resize to 8x8 grayscale in one native pipeline
+    const pixels = await sharp(jpegBuffer)
+      .resize(PHASH_SIZE, PHASH_SIZE, { fit: 'fill' })
+      .grayscale()
+      .raw()
+      .toBuffer()
+
+    // Compute average pixel value
+    let sum = 0
+    for (let i = 0; i < pixels.length; i++) sum += pixels[i]
+    const avg = sum / pixels.length
+
+    // Generate 64-bit hash: each bit = 1 if pixel > average
+    let hash = ''
+    for (let i = 0; i < pixels.length; i++) {
+      hash += pixels[i] >= avg ? '1' : '0'
+    }
+
+    // Convert binary string to hex (64 bits = 16 hex chars)
+    let hex = ''
+    for (let i = 0; i < 64; i += 4) {
+      hex += parseInt(hash.substring(i, i + 4), 2).toString(16)
+    }
+    return hex
+  } catch (e) {
+    console.error('[phash] Error computing hash:', e)
+    return '0000000000000000'
   }
-  
-  // Compute average
-  const avg = samples.reduce((a, b) => a + b, 0) / samples.length
-  
-  // Generate 64-bit hash: each bit = 1 if sample > average
-  let hash = ''
-  for (let i = 0; i < sampleCount; i++) {
-    hash += samples[i] >= avg ? '1' : '0'
-  }
-  
-  // Convert binary string to hex
-  let hex = ''
-  for (let i = 0; i < 64; i += 4) {
-    hex += parseInt(hash.substring(i, i + 4), 2).toString(16)
-  }
-  
-  return hex
+}
+
+/**
+ * Compress a JPEG to a smaller thumbnail using sharp
+ */
+async function compressThumbnail(jpegBuffer: Buffer): Promise<Buffer> {
+  return sharp(jpegBuffer)
+    .resize(THUMBNAIL_MAX_DIM, THUMBNAIL_MAX_DIM, { fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: THUMBNAIL_QUALITY })
+    .toBuffer()
 }
 
 /**
@@ -129,9 +135,9 @@ class FrameRingBuffer {
     this.maxSize = maxSize
   }
 
-  push(base64: string): { hash: string; isDuplicate: boolean; sceneChanged: boolean } {
+  async push(base64: string): Promise<{ hash: string; isDuplicate: boolean; sceneChanged: boolean }> {
     const buffer = Buffer.from(base64, 'base64')
-    const hash = computePerceptualHash(buffer)
+    const hash = await computePerceptualHash(buffer)
     
     // Check if duplicate of most recent frame
     const lastFrame = this.frames.length > 0 ? this.frames[this.frames.length - 1] : null
@@ -238,18 +244,20 @@ class VisualMemoryStore {
   }
 
   /**
-   * Store a new visual memory record with thumbnail
+   * Store a new visual memory record with compressed thumbnail
    */
-  addRecord(description: string, jpegBase64: string, hash: string, tags: string[] = [], location?: string): VisualMemoryRecord {
+  async addRecord(description: string, jpegBase64: string, hash: string, tags: string[] = [], location?: string): Promise<VisualMemoryRecord> {
     this.load()
     
     const now = new Date()
     const filename = `${now.toISOString().replace(/[:.]/g, '-').substring(0, 19)}.jpg`
     
-    // Save compressed thumbnail
-    const buffer = Buffer.from(jpegBase64, 'base64')
+    // Compress and save thumbnail via sharp
+    const rawBuffer = Buffer.from(jpegBase64, 'base64')
+    const thumbBuffer = await compressThumbnail(rawBuffer)
     const thumbPath = join(THUMBNAILS_DIR, filename)
-    writeFileSync(thumbPath, buffer)
+    writeFileSync(thumbPath, thumbBuffer)
+    console.log(`[VisualMemory] Thumbnail saved: ${filename} (${(rawBuffer.length/1024).toFixed(0)}KB → ${(thumbBuffer.length/1024).toFixed(0)}KB)`)
     
     const record: VisualMemoryRecord = {
       ts: now.toISOString(),
@@ -384,8 +392,8 @@ export class VisualMemoryManager {
    * Ingest a new camera frame (called on each frame from frontend)
    * Returns whether a significant scene change was detected
    */
-  ingestFrame(base64Jpeg: string): { isDuplicate: boolean; sceneChanged: boolean } {
-    const { hash, isDuplicate, sceneChanged } = this.ringBuffer.push(base64Jpeg)
+  async ingestFrame(base64Jpeg: string): Promise<{ isDuplicate: boolean; sceneChanged: boolean }> {
+    const { hash, isDuplicate, sceneChanged } = await this.ringBuffer.push(base64Jpeg)
     
     // Proactive scene change detection
     if (sceneChanged && this.onSceneChange) {
@@ -426,12 +434,8 @@ export class VisualMemoryManager {
   /**
    * Store a visual memory record (called after AI analyzes a scene)
    */
-  storeMemory(description: string, jpegBase64: string, hash?: string, tags: string[] = [], location?: string): VisualMemoryRecord {
-    const actualHash = hash || (() => {
-      const buffer = Buffer.from(jpegBase64, 'base64')
-      return computePerceptualHash(buffer)
-    })()
-    
+  async storeMemory(description: string, jpegBase64: string, hash?: string, tags: string[] = [], location?: string): Promise<VisualMemoryRecord> {
+    const actualHash = hash || await computePerceptualHash(Buffer.from(jpegBase64, 'base64'))
     return this.memoryStore.addRecord(description, jpegBase64, actualHash, tags, location)
   }
 

@@ -1031,9 +1031,9 @@ visualMemory.setSceneChangeCallback((context: VisualContext) => {
   }
 })
 
-function handleCameraFrame(base64Image: string, _senderWs: WebSocket) {
+async function handleCameraFrame(base64Image: string, _senderWs: WebSocket) {
   // Just ingest into ring buffer — no AI call per frame
-  const { isDuplicate, sceneChanged } = visualMemory.ingestFrame(base64Image)
+  const { isDuplicate, sceneChanged } = await visualMemory.ingestFrame(base64Image)
   
   if (!isDuplicate) {
     const stats = visualMemory.getStats()
@@ -1060,7 +1060,7 @@ async function handleGetVisualContext(reason: string, senderWs: WebSocket) {
 /**
  * Store a visual memory after AI has analyzed a scene
  */
-function handleStoreVisualMemory(data: {
+async function handleStoreVisualMemory(data: {
   description: string
   tags?: string[]
   location?: string
@@ -1072,7 +1072,7 @@ function handleStoreVisualMemory(data: {
   }
 
   // Store the most recent frame with the AI's description
-  const record = visualMemory.storeMemory(
+  const record = await visualMemory.storeMemory(
     data.description,
     context.currentFrames[context.currentFrames.length - 1],
     undefined,
@@ -1267,7 +1267,9 @@ wss.on('connection', (ws) => {
 
     // Handle camera_frame — ingest into visual memory ring buffer
     if (parsed?.type === 'camera_frame' && parsed.image) {
-      handleCameraFrame(parsed.image, ws)
+      handleCameraFrame(parsed.image, ws).catch(e => {
+        console.error('[VisualMemory] Frame ingest error:', e.message)
+      })
       return
     }
 
@@ -1302,16 +1304,20 @@ wss.on('connection', (ws) => {
 
     // Handle store_visual_memory — AI stores a scene description
     if (parsed?.type === 'store_visual_memory') {
-      const record = handleStoreVisualMemory({
+      handleStoreVisualMemory({
         description: parsed.description || '',
         tags: parsed.tags,
         location: parsed.location,
+      }).then(record => {
+        ws.send(JSON.stringify({
+          type: 'visual_memory_stored',
+          success: !!record,
+          record,
+        }))
+      }).catch(e => {
+        console.error('[VisualMemory] Store error:', e.message)
+        ws.send(JSON.stringify({ type: 'visual_memory_stored', success: false }))
       })
-      ws.send(JSON.stringify({
-        type: 'visual_memory_stored',
-        success: !!record,
-        record,
-      }))
       return
     }
 
