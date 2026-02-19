@@ -347,8 +347,29 @@ function randomInBounds(): [number, number, number] {
   ]
 }
 
+function createPetalGeometry(): THREE.BufferGeometry {
+  // Rounded petal shape via custom vertices
+  const shape = new THREE.Shape()
+  shape.moveTo(0, -0.5)
+  shape.bezierCurveTo(0.3, -0.2, 0.4, 0.2, 0, 0.5)
+  shape.bezierCurveTo(-0.4, 0.2, -0.3, -0.2, 0, -0.5)
+  const geo = new THREE.ShapeGeometry(shape, 4)
+  return geo
+}
+
+function createLeafGeometry(): THREE.BufferGeometry {
+  // Elongated leaf shape
+  const shape = new THREE.Shape()
+  shape.moveTo(0, -0.6)
+  shape.bezierCurveTo(0.25, -0.3, 0.3, 0.1, 0.15, 0.4)
+  shape.bezierCurveTo(0.05, 0.55, -0.05, 0.55, -0.15, 0.4)
+  shape.bezierCurveTo(-0.3, 0.1, -0.25, -0.3, 0, -0.6)
+  const geo = new THREE.ShapeGeometry(shape, 4)
+  return geo
+}
+
 function createInstancedPetals(count: number): THREE.InstancedMesh {
-  const geo = new THREE.PlaneGeometry(1, 1)
+  const geo = createPetalGeometry()
   const mat = new THREE.MeshBasicMaterial({
     color: 0xffbddb,
     transparent: true,
@@ -394,8 +415,7 @@ function createInstancedPetals(count: number): THREE.InstancedMesh {
 }
 
 function createInstancedLeaves(count: number): THREE.InstancedMesh {
-  // Wider plane for leaf shape
-  const geo = new THREE.PlaneGeometry(1.4, 1)
+  const geo = createLeafGeometry()
   const mat = new THREE.MeshBasicMaterial({
     color: 0x8ab848,
     transparent: true,
@@ -532,6 +552,26 @@ function createMinimalDust(count: number): THREE.Points {
   return makePoints('bg-minimal-dust', positions, { color: 0xe0ddd8, size: 0.035, opacity: 0.25 })
 }
 
+// Cached soft circle texture for all point particles
+let _softCircleTexture: THREE.Texture | null = null
+function getSoftCircleTexture(): THREE.Texture {
+  if (_softCircleTexture) return _softCircleTexture
+  const size = 64
+  const canvas = document.createElement('canvas')
+  canvas.width = size; canvas.height = size
+  const ctx = canvas.getContext('2d')!
+  const half = size / 2
+  const gradient = ctx.createRadialGradient(half, half, 0, half, half, half)
+  gradient.addColorStop(0, 'rgba(255,255,255,1)')
+  gradient.addColorStop(0.4, 'rgba(255,255,255,0.8)')
+  gradient.addColorStop(0.7, 'rgba(255,255,255,0.3)')
+  gradient.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, size, size)
+  _softCircleTexture = new THREE.CanvasTexture(canvas)
+  return _softCircleTexture
+}
+
 function makePoints(
   name: string,
   positions: Float32Array,
@@ -542,6 +582,7 @@ function makePoints(
   const material = new THREE.PointsMaterial({
     color: opts.color,
     size: opts.size,
+    map: getSoftCircleTexture(),
     transparent: true,
     opacity: opts.opacity,
     depthWrite: false,
