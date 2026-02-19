@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { camera, controls } from './scene'
 import { state } from './main'
+import { broadcastSyncCommand } from './sync-bridge'
 
 type CameraPreset = 'face' | 'portrait' | 'full' | 'cinematic' | 'meeting'
 
@@ -53,9 +54,9 @@ const PRESETS: Record<CameraPreset, {
 }
 
 // Fixed positions for non-tracking presets
-const FIXED_FULL = {
-  position: new THREE.Vector3(0, 1.1, 3.6),
-  target: new THREE.Vector3(0, 0.82, 0),
+const FIXED_FULL_BASE = {
+  position: new THREE.Vector3(0, 1.2, 3.0),
+  target: new THREE.Vector3(0, 0.9, 0),
 }
 
 let transition: CameraTransition | null = null
@@ -73,6 +74,11 @@ export function initCameraPresets() {
       if (!presetId || !(presetId in PRESETS)) return
 
       setCameraPreset(presetId, 0.8)
+      broadcastSyncCommand({
+        type: 'set_camera_preset',
+        preset: presetId,
+        duration: 0.8,
+      })
       pulseButton(button)
     })
   })
@@ -166,8 +172,12 @@ export function setCameraPreset(presetId: string, duration = 0.8) {
       startTransition({ position: endPos, target: endTarget }, duration)
     }
   } else {
-    // Non-tracking: use fixed positions
-    startTransition(FIXED_FULL, duration)
+    // Non-tracking presets
+    if (presetId === 'full') {
+      startTransition(getAdjustedFullFixed(), duration)
+    } else {
+      startTransition(FIXED_FULL_BASE, duration)
+    }
   }
 
   return true
@@ -190,13 +200,20 @@ function startTransition(target: { position: THREE.Vector3; target: THREE.Vector
  */
 export function adjustPresetOffset(presetId: string, distance: number, height: number) {
   const preset = PRESETS[presetId as CameraPreset]
-  if (!preset || !preset.trackHead) return false
+  if (!preset) return false
+
   // Store custom offsets — applied as multiplier on Z and additive on Y
   customOffsets[presetId] = { distance, height }
+
   // If currently on this preset, re-trigger to apply
   if (currentPreset === presetId) {
-    trackingInitialized = false
+    if (preset.trackHead) {
+      trackingInitialized = false
+    } else if (presetId === 'full') {
+      startTransition(getAdjustedFullFixed(), 0.5)
+    }
   }
+
   return true
 }
 
@@ -224,6 +241,24 @@ function getAdjustedOffsets(presetId: CameraPreset) {
       preset.targetOffset.x + hx,
       preset.targetOffset.y + custom.height * 0.5,
       preset.targetOffset.z
+    ),
+  }
+}
+
+function getAdjustedFullFixed() {
+  const custom = customOffsets.full
+  if (!custom) return FIXED_FULL_BASE
+
+  return {
+    position: new THREE.Vector3(
+      FIXED_FULL_BASE.position.x,
+      FIXED_FULL_BASE.position.y + custom.height,
+      FIXED_FULL_BASE.position.z * custom.distance,
+    ),
+    target: new THREE.Vector3(
+      FIXED_FULL_BASE.target.x,
+      FIXED_FULL_BASE.target.y + custom.height * 0.5,
+      FIXED_FULL_BASE.target.z,
     ),
   }
 }

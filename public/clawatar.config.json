@@ -1,5 +1,5 @@
 {
   "model": {
-    "url": "/models/avatar.vrm"
+    "url": "./models/avatar.vrm"
   }
 }

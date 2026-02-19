@@ -3,16 +3,18 @@ import { loadAndPlay } from './animation'
 import { setExpression, getExpressionOverrides } from './expressions'
 import { setTransparentBackground } from './scene'
 import { state } from './main'
+import { setAutoBlinkEnabled } from './blink'
 import { requestAction, onStateChange, idleConfig } from './action-state-machine'
 import { setCrossfadeScale, crossfadeScale } from './animation'
 import { loadSceneFromJSON, unloadScene, isActive } from './scene-system/index'
+import { broadcastSyncCommand } from './sync-bridge'
 
 // Actions loaded from catalog
 let ALL_ACTIONS: string[] = []
 
 async function loadCatalog() {
   try {
-    const resp = await fetch('/animations/catalog.json')
+    const resp = await fetch('./animations/catalog.json')
     if (resp.ok) {
       const catalog = await resp.json()
       ALL_ACTIONS = catalog.animations.map((a: any) => a.id)
@@ -79,7 +81,7 @@ export async function initUI() {
       slider.addEventListener('input', () => {
         const v = parseInt(slider.value) / 100
         valSpan.textContent = slider.value
-        setExpression(expr, v)
+        setExpression(expr, v, 3.0, { sync: true })
       })
     }
   }
@@ -108,7 +110,8 @@ export async function initUI() {
 
   // Toggles
   document.getElementById('auto-blink')?.addEventListener('change', (e) => {
-    state.autoBlinkEnabled = (e.target as HTMLInputElement).checked
+    const enabled = (e.target as HTMLInputElement).checked
+    setAutoBlinkEnabled(enabled)
   })
   document.getElementById('mouse-look')?.addEventListener('change', (e) => {
     state.mouseLookEnabled = (e.target as HTMLInputElement).checked
@@ -146,6 +149,7 @@ export async function initUI() {
         try {
           const { unloadScene } = await import('./scene-system')
           unloadScene()
+          broadcastSyncCommand({ type: 'set_scene', room: '' })
           console.log('[ui] Scene unloaded')
         } catch (e) {
           console.error('[ui] Unload failed:', e)
@@ -155,6 +159,7 @@ export async function initUI() {
           console.log('[ui] Loading room GLB:', val)
           const { loadRoomGLB } = await import('./scene-system')
           await loadRoomGLB(val)
+          broadcastSyncCommand({ type: 'set_scene', room: val })
           console.log('[ui] Room loaded OK:', val)
         } catch (e) {
           console.error('[ui] Room load FAILED:', e)

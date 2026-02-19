@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VRMA Animation Preview</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; height: 100vh; background: linear-gradient(135deg, #ffe0ec, #fff0f5); color: #333; }
+
+/* Sidebar */
+#sidebar { width: 320px; min-width: 320px; background: rgba(255,255,255,0.92); border-right: 1px solid #f0c0d0; display: flex; flex-direction: column; overflow: hidden; }
+#sidebar-header { padding: 16px; border-bottom: 1px solid #f0c0d0; }
+#sidebar-header h1 { font-size: 18px; color: #d63384; margin-bottom: 8px; }
+#search { width: 100%; padding: 8px 12px; border: 1px solid #f0c0d0; border-radius: 8px; font-size: 14px; outline: none; }
+#search:focus { border-color: #d63384; box-shadow: 0 0 0 2px rgba(214,51,132,0.15); }
+#stats { font-size: 11px; color: #999; margin-top: 6px; }
+#anim-list { flex: 1; overflow-y: auto; padding: 8px; }
+
+/* Category */
+.category { margin-bottom: 8px; }
+.category-header { font-size: 12px; font-weight: 700; color: #d63384; padding: 6px 8px; background: #fff0f5; border-radius: 6px; cursor: pointer; user-select: none; display: flex; justify-content: space-between; }
+.category-header:hover { background: #ffe0ec; }
+.category-header .count { font-weight: 400; color: #999; }
+.category-items { }
+
+/* Animation item */
+.anim-item { padding: 6px 10px; margin: 2px 0; border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background 0.1s; }
+.anim-item:hover { background: #ffe0ec; }
+.anim-item.active { background: #d63384; color: white; }
+.anim-item .num { color: #999; font-size: 11px; margin-right: 4px; }
+.anim-item.active .num { color: rgba(255,255,255,0.7); }
+
+/* Viewer */
+#viewer { flex: 1; position: relative; }
+canvas { display: block; width: 100%; height: 100%; }
+#now-playing { position: absolute; top: 16px; left: 16px; right: 16px; background: rgba(255,255,255,0.9); backdrop-filter: blur(8px); padding: 12px 16px; border-radius: 10px; font-size: 16px; font-weight: 600; color: #d63384; pointer-events: none; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+#now-playing .filename { font-size: 12px; color: #999; font-weight: 400; margin-top: 2px; }
+#loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 18px; color: #d63384; }
+#shortcuts { position: absolute; bottom: 16px; right: 16px; font-size: 11px; color: #999; background: rgba(255,255,255,0.8); padding: 8px 12px; border-radius: 8px; line-height: 1.6; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://esm.sh/three@0.162.0",
+    "three/addons/": "https://esm.sh/three@0.162.0/examples/jsm/",
+    "@pixiv/three-vrm": "https://esm.sh/@pixiv/three-vrm@3.3.3",
+    "@pixiv/three-vrm-animation": "https://esm.sh/@pixiv/three-vrm-animation@3.3.3"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="sidebar">
+  <div id="sidebar-header">
+    <h1>🎭 Animation Preview</h1>
+    <input type="text" id="search" placeholder="Search animations..." autocomplete="off">
+    <div id="stats"></div>
+  </div>
+  <div id="anim-list"></div>
+</div>
+
+<div id="viewer">
+  <div id="loading">Loading VRM model...</div>
+  <div id="now-playing" style="display:none">
+    <div id="np-name">—</div>
+    <div class="filename" id="np-file">—</div>
+  </div>
+  <div id="shortcuts">↑↓ Navigate &nbsp; Space Replay &nbsp; Click to play</div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation';
+
+// All animation files (hardcoded from directory scan)
+const ANIMATIONS = ["0_Angry.vrma", "100_Breakdance Swipes.vrma", "101_Climbing Down.vrma", "102_Climbing.vrma", "103_Crouching Idle.vrma", "104_Crouching.vrma", "105_Dancing.vrma", "106_Dribble.vrma", "107_Drinking Fountain.vrma", "108_Drinking.vrma", "109_End Bicycle Sit Up.vrma", "10_Breakdance Uprock Var 1 Start.vrma", "111_Fishing Cast.vrma", "112_Fishing Idle.vrma", "113_Flip Kick.vrma", "114_Golf Chip.vrma", "115_Golf Putt.vrma", "116_Happy Hand Gesture.vrma", "117_Hard Landing.vrma", "118_Head Nod Yes.vrma", "119_Idle.vrma", "11_Burpee.vrma", "120_Jump Push Up.vrma", "121_Jump.vrma", "122_Jumping.vrma", "123_Kettlebell Swing.vrma", "124_Kick Soccerball.vrma", "125_Laughing.vrma", "126_Laying Sleeping.vrma", "127_Leaning.vrma", "128_Look Around.vrma", "129_Looking Around.vrma", "12_Butterfly Twirl.vrma", "131_Neck Stretching.vrma", "132_Overhead Squat.vrma", "133_Picking Up.vrma", "134_Plank.vrma", "135_Pointing Gesture.vrma", "136_Pointing.vrma", "137_Quick Formal Bow.vrma", "138_Quick Informal Bow.vrma", "139_Robot Hip Hop Dance.vrma", "13_Capoeira.vrma", "140_Run.vrma", "141_Running.vrma", "142_Sad Idle.vrma", "143_Samba Dancing.vrma", "144_Shaking Head No.vrma", "145_Shrugging.vrma", "146_Shuffling.vrma", "147_Sit To Type.vrma", "148_Sitting Drinking.vrma", "149_Sitting Idle.vrma", "14_Capoeira_2.vrma", "150_Sitting Laughing.vrma", "151_Sleeping Idle.vrma", "152_Sneak Walk.vrma", "153_Standing Thumbs Up.vrma", "154_Swimming To Edge.vrma", "155_Talking On Phone.vrma", "156_Thankful.vrma", "157_Thriller Part 3.vrma", "158_Throw.vrma", "159_Typing.vrma", "15_Catwalk Walk Turn 180 Tight.vrma", "160_Walking.vrma", "161_Waving.vrma", "162_Weight Shift Gesture.vrma", "163_Yawn.vrma", "164_Ymca Dance.vrma", "165_Zombie Crawl.vrma", "166_Zombie Scratch Idle.vrma", "16_Cheering.vrma", "17_Cheering_2.vrma", "18_Chicken Dance.vrma", "19_Clapping.vrma", "1_Arms Hip Hop Dance.vrma", "20_Cocky Head Turn.vrma", "21_Crazy Gesture.vrma", "22_Crying.vrma", "23_Crying_2.vrma", "24_Dancing Maraschino Step.vrma", "25_Dancing Twerk.vrma", "26_Defeat.vrma", "27_Defeat_2.vrma", "28_Defeated.vrma", "29_Drunk Idle Variation.vrma", "2_Batter On Deck.vrma", "30_Drunk Idle.vrma", "31_Dying Backwards.vrma", "32_Dying.vrma", "33_Falling.vrma", "35_Female Peek And Aim.vrma", "38_Flair.vrma", "39_Hand Raising.vrma", "3_Bboy Hip Hop Move.vrma", "40_Happy Idle.vrma", "41_Hip Hop Dancing.vrma", "42_Hip Hop Dancing_2.vrma", "43_Hip Hop Dancing_3.vrma", "44_Hip Hop Dancing_4.vrma", "45_House Dancing.vrma", "46_House Dancing_2.vrma", "47_Jazz Dancing.vrma", "48_Jazz Dancing_2.vrma", "49_Joyful Jump.vrma", "4_Belly Dance.vrma", "50_Kneeling Idle.vrma", "51_Laying Moaning.vrma", "52_Looking.vrma", "53_Loser.vrma", "54_Macarena Dance.vrma", "55_Nervously Look Around.vrma", "56_No.vrma", "57_Northern Soul Floor Spin.vrma", "58_Orc Idle.vrma", "59_Petting Animal.vrma", "5_Bellydancing.vrma", "60_Pointing Forward.vrma", "61_Praying.vrma", "62_Praying_2.vrma", "63_Push Up.vrma", "64_Rejected.vrma", "65_Relieved Sigh.vrma", "66_Rifle Rubbing Eyes.vrma", "67_Rumba Dancing.vrma", "68_Shopping Cart Dance.vrma", "69_Shoulder Rubbing.vrma", "6_Body Block.vrma", "70_Silly Dancing.vrma", "71_Singing.vrma", "72_Sitting Clap.vrma", "73_Sitting Disbelief.vrma", "74_Sitting Thumbs Up.vrma", "75_Sitting.vrma", "76_Sitting_2.vrma", "77_Situps.vrma", "78_Snake Hip Hop Dance.vrma", "79_Standing Greeting.vrma", "7_Booty Hip Hop Dance.vrma", "80_Standing Torch Inspect Upward.vrma", "81_Step Hip Hop Dance.vrma", "82_Swimming.vrma", "83_Swing Dancing.vrma", "84_Swing Dancing_2.vrma", "85_Swing Dancing_3.vrma", "86_Talking.vrma", "87_Terrified.vrma", "88_Thinking.vrma", "89_Tut Hip Hop Dance.vrma", "8_Breakdance 1990.vrma", "90_Victory.vrma", "91_Walk In Circle.vrma", "92_Warming Up.vrma", "93_Whatever Gesture.vrma", "94_Angry Gesture.vrma", "95_Annoyed Head Shake.vrma", "96_Arm Stretching.vrma", "97_Back Squat.vrma", "98_Bicycle Crunch.vrma", "99_Boxing.vrma", "9_Breakdance Footwork 3.vrma", "dm_0.vrma", "dm_1.vrma", "dm_10.vrma", "dm_100.vrma", "dm_101.vrma", "dm_102.vrma", "dm_103.vrma", "dm_104.vrma", "dm_105.vrma", "dm_106.vrma", "dm_107.vrma", "dm_108.vrma", "dm_109.vrma", "dm_11.vrma", "dm_110.vrma", "dm_111.vrma", "dm_112.vrma", "dm_113.vrma", "dm_114.vrma", "dm_115.vrma", "dm_116.vrma", "dm_117.vrma", "dm_118.vrma", "dm_119.vrma", "dm_12.vrma", "dm_120.vrma", "dm_121.vrma", "dm_122.vrma", "dm_123.vrma", "dm_124.vrma", "dm_125.vrma", "dm_126.vrma", "dm_127.vrma", "dm_128.vrma", "dm_129.vrma", "dm_13.vrma", "dm_130.vrma", "dm_131.vrma", "dm_132.vrma", "dm_133.vrma", "dm_134.vrma", "dm_135.vrma", "dm_136.vrma", "dm_137.vrma", "dm_138.vrma", "dm_139.vrma", "dm_14.vrma", "dm_15.vrma", "dm_16.vrma", "dm_17.vrma", "dm_18.vrma", "dm_19.vrma", "dm_2.vrma", "dm_20.vrma", "dm_21.vrma", "dm_22.vrma", "dm_23.vrma", "dm_24.vrma", "dm_25.vrma", "dm_26.vrma", "dm_27.vrma", "dm_28.vrma", "dm_29.vrma", "dm_3.vrma", "dm_30.vrma", "dm_31.vrma", "dm_32.vrma", "dm_33.vrma", "dm_34.vrma", "dm_35.vrma", "dm_36.vrma", "dm_37.vrma", "dm_38.vrma", "dm_39.vrma", "dm_4.vrma", "dm_40.vrma", "dm_41.vrma", "dm_42.vrma", "dm_43.vrma", "dm_44.vrma", "dm_45.vrma", "dm_46.vrma", "dm_47.vrma", "dm_48.vrma", "dm_49.vrma", "dm_5.vrma", "dm_50.vrma", "dm_51.vrma", "dm_52.vrma", "dm_53.vrma", "dm_54.vrma", "dm_55.vrma", "dm_56.vrma", "dm_57.vrma", "dm_58.vrma", "dm_59.vrma", "dm_6.vrma", "dm_60.vrma", "dm_61.vrma", "dm_62.vrma", "dm_63.vrma", "dm_64.vrma", "dm_65.vrma", "dm_66.vrma", "dm_67.vrma", "dm_68.vrma", "dm_69.vrma", "dm_7.vrma", "dm_70.vrma", "dm_71.vrma", "dm_72.vrma", "dm_73.vrma", "dm_74.vrma", "dm_75.vrma", "dm_76.vrma", "dm_77.vrma", "dm_78.vrma", "dm_79.vrma", "dm_8.vrma", "dm_80.vrma", "dm_81.vrma", "dm_82.vrma", "dm_83.vrma", "dm_84.vrma", "dm_85.vrma", "dm_86.vrma", "dm_87.vrma", "dm_88.vrma", "dm_89.vrma", "dm_9.vrma", "dm_90.vrma", "dm_91.vrma", "dm_92.vrma", "dm_93.vrma", "dm_94.vrma", "dm_95.vrma", "dm_96.vrma", "dm_97.vrma", "dm_98.vrma", "dm_99.vrma", "reze_dance_hard.vrma", "reze_dance_soft.vrma"];
+
+// Categorize
+function categorize(files) {
+  const named = [], dm = [], reze = [];
+  for (const f of files) {
+    if (f.startsWith('dm_')) dm.push(f);
+    else if (f.startsWith('reze_')) reze.push(f);
+    else named.push(f);
+  }
+  // Sort
+  const numSort = (a, b) => {
+    const na = parseInt(a), nb = parseInt(b);
+    if (!isNaN(na) && !isNaN(nb)) return na - nb;
+    return a.localeCompare(b);
+  };
+  named.sort(numSort);
+  dm.sort((a, b) => parseInt(a.split('_')[1]) - parseInt(b.split('_')[1]));
+  reze.sort();
+  return [
+    { name: `Named Animations (${named.length})`, items: named },
+    { name: `Motion Pack — dm_ (${dm.length})`, items: dm },
+    { name: `Custom Dances — reze_ (${reze.length})`, items: reze },
+  ];
+}
+
+function displayName(f) {
+  const base = f.replace('.vrma', '');
+  if (base.startsWith('dm_')) return `dm_${base.split('_')[1]}`;
+  if (base.startsWith('reze_')) return base.replace(/_/g, ' ');
+  const m = base.match(/^(\d+)_(.+)$/);
+  if (m) return m[2];
+  return base;
+}
+
+// Setup Three.js
+const viewer = document.getElementById('viewer');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(viewer.clientWidth, viewer.clientHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+viewer.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(30, viewer.clientWidth / viewer.clientHeight, 0.1, 100);
+camera.position.set(0, 1.2, 3.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.9, 0);
+controls.enableDamping = true;
+controls.update();
+
+// Lights
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const dir = new THREE.DirectionalLight(0xffffff, 1.2);
+dir.position.set(2, 3, 2);
+scene.add(dir);
+
+// Grid
+const grid = new THREE.GridHelper(6, 12, 0xf0c0d0, 0xf5e0e8);
+scene.add(grid);
+
+// Loader
+const loader = new GLTFLoader();
+loader.register(p => new VRMLoaderPlugin(p));
+loader.register(p => new VRMAnimationLoaderPlugin(p));
+
+let vrm = null;
+let mixer = null;
+let currentAction = null;
+let currentIndex = -1;
+let allItems = []; // flat list of {file, el}
+
+// Load VRM
+loader.load('./models/avatar.vrm', (gltf) => {
+  vrm = gltf.userData.vrm;
+  VRMUtils.removeUnnecessaryVertices(gltf.scene);
+  VRMUtils.removeUnnecessaryJoints(gltf.scene);
+  VRMUtils.rotateVRM0(vrm);
+  scene.add(vrm.scene);
+  mixer = new THREE.AnimationMixer(vrm.scene);
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('now-playing').style.display = 'block';
+}, undefined, (err) => {
+  document.getElementById('loading').textContent = 'Error loading VRM: ' + err.message;
+});
+
+// Build sidebar
+const categories = categorize(ANIMATIONS);
+const listEl = document.getElementById('anim-list');
+const searchEl = document.getElementById('search');
+const statsEl = document.getElementById('stats');
+statsEl.textContent = `${ANIMATIONS.length} animations`;
+
+for (const cat of categories) {
+  if (cat.items.length === 0) continue;
+  const catEl = document.createElement('div');
+  catEl.className = 'category';
+  const header = document.createElement('div');
+  header.className = 'category-header';
+  header.innerHTML = `<span>${cat.name}</span><span class="count">${cat.items.length}</span>`;
+  const itemsEl = document.createElement('div');
+  itemsEl.className = 'category-items';
+
+  for (const file of cat.items) {
+    const el = document.createElement('div');
+    el.className = 'anim-item';
+    const name = displayName(file);
+    const prefix = file.match(/^(\d+)_/) ? `<span class="num">${file.match(/^(\d+)/)[1]}</span>` : '';
+    el.innerHTML = prefix + name;
+    el.title = file;
+    el.addEventListener('click', () => playAnimation(file));
+    itemsEl.appendChild(el);
+    allItems.push({ file, el, name: name.toLowerCase(), cat: catEl });
+  }
+
+  header.addEventListener('click', () => {
+    itemsEl.style.display = itemsEl.style.display === 'none' ? '' : 'none';
+  });
+
+  catEl.appendChild(header);
+  catEl.appendChild(itemsEl);
+  listEl.appendChild(catEl);
+}
+
+// Search
+searchEl.addEventListener('input', () => {
+  const q = searchEl.value.toLowerCase();
+  for (const item of allItems) {
+    const match = !q || item.name.includes(q) || item.file.toLowerCase().includes(q);
+    item.el.style.display = match ? '' : 'none';
+  }
+  // Show/hide categories
+  for (const cat of listEl.children) {
+    const items = cat.querySelector('.category-items');
+    const visible = [...items.children].some(c => c.style.display !== 'none');
+    cat.style.display = visible ? '' : 'none';
+  }
+});
+
+// Play animation
+const animCache = {};
+async function playAnimation(file) {
+  if (!vrm || !mixer) return;
+
+  // Update UI
+  const idx = allItems.findIndex(i => i.file === file);
+  if (idx >= 0) {
+    if (currentIndex >= 0) allItems[currentIndex].el.classList.remove('active');
+    allItems[idx].el.classList.add('active');
+    allItems[idx].el.scrollIntoView({ block: 'nearest' });
+    currentIndex = idx;
+  }
+
+  document.getElementById('np-name').textContent = displayName(file);
+  document.getElementById('np-file').textContent = file;
+
+  // Load and play
+  try {
+    let clip;
+    if (animCache[file]) {
+      clip = animCache[file];
+    } else {
+      const gltf = await loader.loadAsync(`./animations/${file}`);
+      const vrmAnim = gltf.userData.vrmAnimations?.[0];
+      if (!vrmAnim) { console.warn('No animation in', file); return; }
+      clip = createVRMAnimationClip(vrmAnim, vrm);
+      animCache[file] = clip;
+    }
+
+    if (currentAction) { currentAction.stop(); }
+    const action = mixer.clipAction(clip);
+    action.reset().play();
+    currentAction = action;
+  } catch (e) {
+    console.error('Failed to load', file, e);
+    document.getElementById('np-name').textContent = `Error: ${e.message}`;
+  }
+}
+
+// Keyboard
+document.addEventListener('keydown', (e) => {
+  if (e.target === searchEl) return;
+  const visible = allItems.filter(i => i.el.style.display !== 'none');
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const curVisIdx = visible.findIndex(i => i.file === allItems[currentIndex]?.file);
+    const next = visible[curVisIdx + 1] || visible[0];
+    if (next) playAnimation(next.file);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const curVisIdx = visible.findIndex(i => i.file === allItems[currentIndex]?.file);
+    const prev = visible[curVisIdx - 1] || visible[visible.length - 1];
+    if (prev) playAnimation(prev.file);
+  } else if (e.key === ' ') {
+    e.preventDefault();
+    if (currentIndex >= 0) playAnimation(allItems[currentIndex].file);
+  }
+});
+
+// Render loop
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  if (mixer) mixer.update(dt);
+  if (vrm) vrm.update(dt);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// Resize
+window.addEventListener('resize', () => {
+  camera.aspect = viewer.clientWidth / viewer.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(viewer.clientWidth, viewer.clientHeight);
+});
+</script>
+</body>
+</html>

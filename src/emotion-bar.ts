@@ -74,18 +74,9 @@ function applyEmotion(cfg: EmotionAction) {
   const actionId = cfg.actionId ?? pickRandom(cfg.randomActions)
   if (!actionId) return
 
-  // Broadcast emotion to followers via WS
-  try {
-    const ws = (window as any).__clawatar_ws as WebSocket | undefined
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      const msg: any = { type: 'play_action', action_id: actionId }
-      msg.expression = cfg.expression
-      msg.expression_weight = cfg.intensity
-      ws.send(JSON.stringify(msg))
-    }
-  } catch { /* ignore */ }
-
-  requestAction(actionId).catch((err) => {
+  requestAction(actionId, {
+    expression: { name: cfg.expression, weight: cfg.intensity },
+  }).catch((err) => {
     console.warn('Emotion action failed:', err)
   })
 }

@@ -9,13 +9,13 @@ type ThemeConfig = {
 }
 
 const GRADIENT_COLORS: Record<string, ThemeConfig> = {
-  sakura: { id: 0, top: [0.98, 0.82, 0.86], mid: [0.96, 0.72, 0.78], bottom: [0.92, 0.62, 0.72], speed: 0.55 },
-  sunset: { id: 1, top: [1.0, 0.84, 0.62], mid: [0.99, 0.70, 0.46], bottom: [0.92, 0.52, 0.42], speed: 0.65 },
-  ocean: { id: 2, top: [0.72, 0.87, 0.96], mid: [0.52, 0.74, 0.90], bottom: [0.38, 0.58, 0.77], speed: 0.48 },
-  night: { id: 3, top: [0.21, 0.18, 0.34], mid: [0.14, 0.12, 0.24], bottom: [0.09, 0.08, 0.16], speed: 0.35 },
-  forest: { id: 4, top: [0.84, 0.92, 0.76], mid: [0.62, 0.78, 0.56], bottom: [0.42, 0.60, 0.40], speed: 0.46 },
-  lavender: { id: 5, top: [0.93, 0.86, 0.99], mid: [0.82, 0.72, 0.94], bottom: [0.67, 0.56, 0.82], speed: 0.52 },
-  minimal: { id: 6, top: [0.98, 0.97, 0.95], mid: [0.96, 0.94, 0.93], bottom: [0.93, 0.92, 0.91], speed: 0.22 },
+  sakura: { id: 0, top: [0.98, 0.82, 0.86], mid: [0.96, 0.72, 0.78], bottom: [0.92, 0.62, 0.72], speed: 1.4 },
+  sunset: { id: 1, top: [1.0, 0.84, 0.62], mid: [0.99, 0.70, 0.46], bottom: [0.92, 0.52, 0.42], speed: 1.6 },
+  ocean: { id: 2, top: [0.72, 0.87, 0.96], mid: [0.52, 0.74, 0.90], bottom: [0.38, 0.58, 0.77], speed: 1.3 },
+  night: { id: 3, top: [0.21, 0.18, 0.34], mid: [0.14, 0.12, 0.24], bottom: [0.09, 0.08, 0.16], speed: 0.8 },
+  forest: { id: 4, top: [0.84, 0.92, 0.76], mid: [0.62, 0.78, 0.56], bottom: [0.42, 0.60, 0.40], speed: 1.2 },
+  lavender: { id: 5, top: [0.93, 0.86, 0.99], mid: [0.82, 0.72, 0.94], bottom: [0.67, 0.56, 0.82], speed: 1.3 },
+  minimal: { id: 6, top: [0.98, 0.97, 0.95], mid: [0.96, 0.94, 0.93], bottom: [0.93, 0.92, 0.91], speed: 0.5 },
 }
 
 const DEFAULT_THEME = 'sakura'
@@ -164,16 +164,17 @@ vec3 renderTheme(float themeId, vec2 uv, float t, vec3 top, vec3 mid, vec3 botto
   vec2 p = uv * 2.0 - 1.0;
   p.x *= 1.1;
 
-  float flow = fbm(uv * vec2(2.3, 1.9), t * 0.2);
-  float gy = clamp(uv.y + flow * 0.08, 0.0, 1.0);
+  float flow = fbm(uv * vec2(2.3, 1.9), t * 0.35);
+  float flow2 = fbm(uv * vec2(1.5, 2.8) + vec2(3.1, -1.7), t * 0.28);
+  float gy = clamp(uv.y + flow * 0.22 + flow2 * 0.12, 0.0, 1.0);
   vec3 base = mix(bottom, mid, smoothstep(0.0, 0.55, gy));
   base = mix(base, top, smoothstep(0.45, 1.0, gy));
 
   vec3 color = base;
 
   if (themeId < 0.5) {
-    float wc = fbm(uv * vec2(2.0, 1.6) + vec2(0.0, t * 0.08), t * 0.12);
-    float wc2 = fbm(uv * vec2(3.8, 2.2) - vec2(t * 0.05, 0.0), t * 0.1);
+    float wc = fbm(uv * vec2(2.0, 1.6) + vec2(0.0, t * 0.18), t * 0.25);
+    float wc2 = fbm(uv * vec2(3.8, 2.2) - vec2(t * 0.12, 0.0), t * 0.2);
     float stain = smoothstep(-0.45, 0.55, wc + wc2 * 0.6 + (uv.y - 0.5) * 0.35);
     color = mix(bottom, top * 0.98, stain);
 
@@ -181,8 +182,8 @@ vec3 renderTheme(float themeId, vec2 uv, float t, vec3 top, vec3 mid, vec3 botto
     for (int i = 0; i < 5; i++) {
       float fi = float(i);
       vec2 c = vec2(
-        0.1 + hash21(vec2(fi, 1.0)) * 0.8 + sin(t * (0.08 + fi * 0.012) + fi * 2.7) * 0.08,
-        0.15 + hash21(vec2(fi, 9.0)) * 0.7 + cos(t * (0.07 + fi * 0.015) + fi * 1.9) * 0.06
+        0.1 + hash21(vec2(fi, 1.0)) * 0.8 + sin(t * (0.18 + fi * 0.025) + fi * 2.7) * 0.14,
+        0.15 + hash21(vec2(fi, 9.0)) * 0.7 + cos(t * (0.15 + fi * 0.03) + fi * 1.9) * 0.10
       );
       float r = 0.06 + hash21(vec2(fi, 5.0)) * 0.08;
       float orb = softCircle(uv, c, r, r * 0.85);
@@ -190,26 +191,40 @@ vec3 renderTheme(float themeId, vec2 uv, float t, vec3 top, vec3 mid, vec3 botto
     }
     color += bokeh;
   } else if (themeId < 1.5) {
+    // Pulsing sun glow
+    float pulse = sin(t * 0.8) * 0.5 + 0.5;
+    float pulse2 = sin(t * 1.3 + 1.5) * 0.5 + 0.5;
+    float sunGlow = softCircle(uv, vec2(0.5, 0.65 + sin(t * 0.3) * 0.04), 0.35 + pulse * 0.08, 0.35);
+    color += vec3(1.0, 0.85, 0.55) * sunGlow * (0.18 + pulse2 * 0.12);
+
     vec2 rayUv = rot(-0.55) * p;
-    float ray = smoothstep(-0.4, 0.9, rayUv.x + fbm(vec2(rayUv.x * 1.8, rayUv.y * 0.6), t * 0.11) * 0.4);
-    float band = sin(rayUv.x * 13.0 + t * 0.9 + fbm(rayUv * 1.4, t * 0.16) * 3.0) * 0.5 + 0.5;
+    float ray = smoothstep(-0.4, 0.9, rayUv.x + fbm(vec2(rayUv.x * 1.8, rayUv.y * 0.6), t * 0.22) * 0.55);
+    float band = sin(rayUv.x * 13.0 + t * 1.6 + fbm(rayUv * 1.4, t * 0.28) * 3.5) * 0.5 + 0.5;
     float rays = ray * band * smoothstep(-0.8, 0.3, rayUv.y);
-    color += vec3(1.0, 0.8, 0.58) * rays * 0.25;
+    color += vec3(1.0, 0.8, 0.58) * rays * 0.32;
 
     for (int i = 0; i < 5; i++) {
       float fi = float(i);
-      vec2 c = vec2(0.15 + fi * 0.18 + sin(t * 0.1 + fi) * 0.05, 0.25 + hash21(vec2(fi, 7.0)) * 0.45);
-      float orb = softCircle(uv, c, 0.11, 0.12);
-      color += vec3(1.0, 0.74, 0.48) * orb * 0.08;
+      vec2 c = vec2(0.15 + fi * 0.18 + sin(t * 0.2 + fi) * 0.08, 0.25 + hash21(vec2(fi, 7.0)) * 0.45);
+      float orb = softCircle(uv, c, 0.13, 0.14);
+      color += vec3(1.0, 0.74, 0.48) * orb * 0.12;
     }
   } else if (themeId < 2.5) {
+    // Ocean wave undulation
+    float wave1 = sin(uv.y * 8.0 + t * 1.8 + sin(uv.x * 4.0 + t * 0.9) * 1.2) * 0.5 + 0.5;
+    float wave2 = sin(uv.y * 5.5 - t * 1.3 + cos(uv.x * 3.0 - t * 0.7) * 0.8) * 0.5 + 0.5;
+    float wave3 = sin((uv.x + uv.y) * 6.0 + t * 1.1) * 0.5 + 0.5;
+    float waveMix = wave1 * 0.45 + wave2 * 0.35 + wave3 * 0.2;
+    color = mix(bottom * 0.92, top * 1.08, waveMix);
+
+    // Caustics overlay
     vec2 w = uv * 3.4;
-    float c1 = sin((w.x + t * 0.7) * 3.2 + sin((w.y - t * 0.4) * 1.7));
-    float c2 = sin((w.y - t * 0.63) * 3.7 + cos((w.x + t * 0.35) * 2.1));
-    float c3 = sin((w.x + w.y + t * 0.52) * 2.9);
-    float caustic = pow(clamp((c1 + c2 + c3) * 0.17 + 0.5, 0.0, 1.0), 2.4);
-    color += vec3(0.98, 0.9, 0.72) * caustic * 0.18;
-    color += vec3(0.75, 0.93, 1.0) * caustic * 0.08;
+    float c1 = sin((w.x + t * 1.2) * 3.2 + sin((w.y - t * 0.7) * 1.7));
+    float c2 = sin((w.y - t * 1.0) * 3.7 + cos((w.x + t * 0.6) * 2.1));
+    float c3 = sin((w.x + w.y + t * 0.85) * 2.9);
+    float caustic = pow(clamp((c1 + c2 + c3) * 0.2 + 0.5, 0.0, 1.0), 2.0);
+    color += vec3(0.98, 0.92, 0.75) * caustic * 0.22;
+    color += vec3(0.75, 0.93, 1.0) * caustic * 0.12;
   } else if (themeId < 3.5) {
     color *= 0.72;
     for (int i = 0; i < 10; i++) {
@@ -238,8 +253,8 @@ vec3 renderTheme(float themeId, vec2 uv, float t, vec3 top, vec3 mid, vec3 botto
     color -= vec3(0.08, 0.12, 0.06) * (1.0 - leaves) * 0.38;
   } else if (themeId < 5.5) {
     vec2 q = rot(0.35) * p;
-    float fold1 = sin(q.x * 7.5 + t * 0.65 + fbm(q * 1.8, t * 0.1) * 3.0);
-    float fold2 = sin(q.x * 3.2 - t * 0.4 + fbm(q * 2.5 + 3.0, t * 0.14) * 2.8);
+    float fold1 = sin(q.x * 7.5 + t * 1.2 + fbm(q * 1.8, t * 0.22) * 3.5);
+    float fold2 = sin(q.x * 3.2 - t * 0.8 + fbm(q * 2.5 + 3.0, t * 0.26) * 3.2);
     float silk = (fold1 * 0.55 + fold2 * 0.45) * 0.5 + 0.5;
     color = mix(bottom * 0.9, top * 1.05, silk);
     color += vec3(1.0, 0.9, 0.98) * pow(silk, 4.0) * 0.14;
@@ -314,7 +329,7 @@ export function initGradientBackground(scene: THREE.Scene) {
     transparent: false,
   })
 
-  gradientMesh = new THREE.Mesh(new THREE.PlaneGeometry(32, 24), gradientMaterial)
+  gradientMesh = new THREE.Mesh(new THREE.PlaneGeometry(64, 48), gradientMaterial)
   gradientMesh.position.set(0, 1.1, -8)
   gradientMesh.renderOrder = -1000
   gradientMesh.frustumCulled = false

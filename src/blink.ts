@@ -4,6 +4,16 @@ let nextBlinkTime = 0
 let blinkPhase: 'idle' | 'closing' | 'opening' = 'idle'
 let blinkProgress = 0
 
+export function setAutoBlinkEnabled(enabled: boolean) {
+  state.autoBlinkEnabled = enabled
+
+  if (!enabled) {
+    blinkPhase = 'idle'
+    blinkProgress = 0
+    state.vrm?.expressionManager?.setValue('blink', 0)
+  }
+}
+
 export function updateBlink(elapsed: number) {
   if (!state.autoBlinkEnabled || !state.vrm?.expressionManager) return
 

@@ -92,10 +92,24 @@ const Z_BOUND = 0.65
 let activeTexture: THREE.Texture | null = null
 let activeParticles: THREE.Points | null = null
 let activeShootingStars: THREE.Points | null = null
+let activeInstancedMesh: THREE.InstancedMesh | null = null
 let particlePreset: BackgroundPreset = 'default'
 let particleVelocities: Float32Array | null = null
 let particlePhases: Float32Array | null = null
 let shootingStarData: { velocities: Float32Array; lifetimes: Float32Array; maxLifetimes: Float32Array } | null = null
+
+// InstancedMesh particle data
+type InstancedParticleData = {
+  positions: Float32Array  // x,y,z per instance
+  velocities: Float32Array // fall speed per instance
+  phases: Float32Array     // random phase per instance
+  rotations: Float32Array  // current rotation x,y,z per instance
+  rotSpeeds: Float32Array  // rotation speed x,y,z per instance
+  scales: Float32Array     // scale per instance
+  count: number
+}
+let instancedData: InstancedParticleData | null = null
+const _dummy = new THREE.Object3D()
 
 export function initBackgrounds() {
   const select = document.getElementById('background-select') as HTMLSelectElement | null
@@ -110,6 +124,19 @@ export function initBackgrounds() {
 
 export function updateBackgroundEffects(elapsed: number, delta: number) {
   if (_suppressedByScene) return
+
+  // Update instanced mesh particles (petals/leaves)
+  if (activeInstancedMesh && instancedData) {
+    switch (particlePreset) {
+      case 'sakura':
+        updateInstancedPetals(elapsed, delta)
+        break
+      case 'forest':
+        updateInstancedLeaves(elapsed, delta)
+        break
+    }
+  }
+
   if (!activeParticles) return
   const pos = activeParticles.geometry.getAttribute('position') as THREE.BufferAttribute | null
   if (!pos) return
@@ -117,9 +144,6 @@ export function updateBackgroundEffects(elapsed: number, delta: number) {
   const arr = pos.array as Float32Array
 
   switch (particlePreset) {
-    case 'sakura':
-      updatePetals(arr, elapsed, delta)
-      break
     case 'sunset':
       updateSunsetDust(arr, elapsed, delta)
       break
@@ -129,9 +153,6 @@ export function updateBackgroundEffects(elapsed: number, delta: number) {
     case 'night':
       updateStars(elapsed, delta)
       updateShootingStars(delta)
-      break
-    case 'forest':
-      updateLeaves(arr, elapsed, delta)
       break
     case 'lavender':
       updateSnowflakes(arr, elapsed, delta)
@@ -151,31 +172,73 @@ export function updateBackgroundEffects(elapsed: number, delta: number) {
   }
 }
 
-// --- Update functions per theme ---
+// --- InstancedMesh update functions ---
 
-function updatePetals(arr: Float32Array, elapsed: number, delta: number) {
-  if (!particleVelocities || !particlePhases) return
-  for (let i = 0; i < arr.length; i += 3) {
-    const idx = i / 3
-    arr[i + 1] -= particleVelocities[idx] * delta
-    arr[i] += Math.sin(elapsed * 0.9 + particlePhases[idx]) * 0.0026
-    arr[i + 2] += Math.cos(elapsed * 0.7 + particlePhases[idx]) * 0.0016
-    if (arr[i + 1] < Y_MIN) {
-      arr[i] = (Math.random() - 0.5) * X_BOUND * 2
-      arr[i + 1] = Y_MAX + Math.random() * 0.4
-      arr[i + 2] = (Math.random() - 0.5) * Z_BOUND * 2
+function updateInstancedPetals(elapsed: number, delta: number) {
+  if (!activeInstancedMesh || !instancedData) return
+  const d = instancedData
+  for (let i = 0; i < d.count; i++) {
+    const i3 = i * 3
+    // Fall
+    d.positions[i3 + 1] -= d.velocities[i] * delta
+    // Sway
+    d.positions[i3] += Math.sin(elapsed * 0.9 + d.phases[i]) * 0.003
+    d.positions[i3 + 2] += Math.cos(elapsed * 0.7 + d.phases[i]) * 0.002
+    // Tumble rotation
+    d.rotations[i3] += d.rotSpeeds[i3] * delta
+    d.rotations[i3 + 1] += d.rotSpeeds[i3 + 1] * delta
+    d.rotations[i3 + 2] += d.rotSpeeds[i3 + 2] * delta
+    // Reset if below ground
+    if (d.positions[i3 + 1] < Y_MIN) {
+      d.positions[i3] = (Math.random() - 0.5) * X_BOUND * 2
+      d.positions[i3 + 1] = Y_MAX + Math.random() * 0.4
+      d.positions[i3 + 2] = (Math.random() - 0.5) * Z_BOUND * 2
     }
+    // Update matrix
+    _dummy.position.set(d.positions[i3], d.positions[i3 + 1], d.positions[i3 + 2])
+    _dummy.rotation.set(d.rotations[i3], d.rotations[i3 + 1], d.rotations[i3 + 2])
+    _dummy.scale.setScalar(d.scales[i])
+    _dummy.updateMatrix()
+    activeInstancedMesh!.setMatrixAt(i, _dummy.matrix)
   }
+  activeInstancedMesh!.instanceMatrix.needsUpdate = true
 }
+
+function updateInstancedLeaves(elapsed: number, delta: number) {
+  if (!activeInstancedMesh || !instancedData) return
+  const d = instancedData
+  for (let i = 0; i < d.count; i++) {
+    const i3 = i * 3
+    d.positions[i3 + 1] -= d.velocities[i] * delta
+    d.positions[i3] += Math.sin(elapsed * 0.6 + d.phases[i]) * 0.004
+    d.positions[i3 + 2] += Math.cos(elapsed * 0.4 + d.phases[i]) * 0.002
+    d.rotations[i3] += d.rotSpeeds[i3] * delta
+    d.rotations[i3 + 1] += d.rotSpeeds[i3 + 1] * delta
+    d.rotations[i3 + 2] += d.rotSpeeds[i3 + 2] * delta
+    if (d.positions[i3 + 1] < Y_MIN) {
+      d.positions[i3] = (Math.random() - 0.5) * X_BOUND * 2
+      d.positions[i3 + 1] = Y_MAX + Math.random() * 0.3
+      d.positions[i3 + 2] = (Math.random() - 0.5) * Z_BOUND * 2
+    }
+    _dummy.position.set(d.positions[i3], d.positions[i3 + 1], d.positions[i3 + 2])
+    _dummy.rotation.set(d.rotations[i3], d.rotations[i3 + 1], d.rotations[i3 + 2])
+    _dummy.scale.setScalar(d.scales[i])
+    _dummy.updateMatrix()
+    activeInstancedMesh!.setMatrixAt(i, _dummy.matrix)
+  }
+  activeInstancedMesh!.instanceMatrix.needsUpdate = true
+}
+
+// --- Points update functions ---
 
 function updateSunsetDust(arr: Float32Array, elapsed: number, delta: number) {
   if (!particlePhases) return
   for (let i = 0; i < arr.length; i += 3) {
     const idx = i / 3
     const p = particlePhases[idx]
-    arr[i] += Math.sin(elapsed * 0.3 + p) * 0.0006
-    arr[i + 1] += Math.cos(elapsed * 0.2 + p) * 0.0004
-    arr[i + 2] += Math.sin(elapsed * 0.25 + p * 1.3) * 0.0005
+    arr[i] += Math.sin(elapsed * 0.3 + p) * 0.001
+    arr[i + 1] += Math.cos(elapsed * 0.2 + p) * 0.0007
+    arr[i + 2] += Math.sin(elapsed * 0.25 + p * 1.3) * 0.0008
   }
 }
 
@@ -183,9 +246,9 @@ function updateBubbles(arr: Float32Array, elapsed: number, delta: number) {
   if (!particleVelocities || !particlePhases) return
   for (let i = 0; i < arr.length; i += 3) {
     const idx = i / 3
-    arr[i + 1] += particleVelocities[idx] * delta // rise upward
-    arr[i] += Math.sin(elapsed * 0.6 + particlePhases[idx]) * 0.001 // horizontal wobble
-    arr[i + 2] += Math.cos(elapsed * 0.5 + particlePhases[idx]) * 0.0008
+    arr[i + 1] += particleVelocities[idx] * delta
+    arr[i] += Math.sin(elapsed * 0.6 + particlePhases[idx]) * 0.0015
+    arr[i + 2] += Math.cos(elapsed * 0.5 + particlePhases[idx]) * 0.001
     if (arr[i + 1] > Y_MAX) {
       arr[i] = (Math.random() - 0.5) * X_BOUND * 2
       arr[i + 1] = Y_MIN - Math.random() * 0.3
@@ -216,11 +279,9 @@ function updateShootingStars(delta: number) {
       anyActive = true
       arr[i3] += velocities[i * 2] * delta
       arr[i3 + 1] += velocities[i * 2 + 1] * delta
-      // fade based on remaining life
       const t = lifetimes[i] / maxLifetimes[i]
       material.opacity = t * 0.9
     } else if (Math.random() < 0.003) {
-      // respawn occasionally
       arr[i3] = (Math.random() - 0.5) * X_BOUND * 1.5
       arr[i3 + 1] = 1.8 + Math.random() * 1.0
       arr[i3 + 2] = (Math.random() - 0.5) * Z_BOUND
@@ -234,22 +295,6 @@ function updateShootingStars(delta: number) {
   }
   pos.needsUpdate = true
   if (!anyActive) material.opacity = 0
-}
-
-function updateLeaves(arr: Float32Array, elapsed: number, delta: number) {
-  if (!particleVelocities || !particlePhases) return
-  for (let i = 0; i < arr.length; i += 3) {
-    const idx = i / 3
-    const p = particlePhases[idx]
-    arr[i + 1] -= particleVelocities[idx] * delta // drift down (slower than petals)
-    arr[i] += Math.sin(elapsed * 0.6 + p) * 0.004 // wider flutter side-to-side
-    arr[i + 2] += Math.cos(elapsed * 0.4 + p) * 0.002
-    if (arr[i + 1] < Y_MIN) {
-      arr[i] = (Math.random() - 0.5) * X_BOUND * 2
-      arr[i + 1] = Y_MAX + Math.random() * 0.3
-      arr[i + 2] = (Math.random() - 0.5) * Z_BOUND * 2
-    }
-  }
 }
 
 function updateSnowflakes(arr: Float32Array, elapsed: number, delta: number) {
@@ -266,9 +311,8 @@ function updateSnowflakes(arr: Float32Array, elapsed: number, delta: number) {
       arr[i + 2] = (Math.random() - 0.5) * Z_BOUND * 2
     }
   }
-  // subtle sparkle via opacity oscillation
   const mat = activeParticles!.material as THREE.PointsMaterial
-  mat.opacity = 0.38 + Math.sin(elapsed * 3.0) * 0.08
+  mat.opacity = 0.55 + Math.sin(elapsed * 3.0) * 0.1
 }
 
 function updateCafeDust(arr: Float32Array, elapsed: number, delta: number) {
@@ -287,9 +331,9 @@ function updateMinimalDust(arr: Float32Array, elapsed: number, delta: number) {
   for (let i = 0; i < arr.length; i += 3) {
     const idx = i / 3
     const p = particlePhases[idx]
-    arr[i] += Math.sin(elapsed * 0.2 + p) * 0.0003
-    arr[i + 1] += Math.cos(elapsed * 0.15 + p) * 0.0002
-    arr[i + 2] += Math.sin(elapsed * 0.18 + p * 1.2) * 0.0003
+    arr[i] += Math.sin(elapsed * 0.2 + p) * 0.0004
+    arr[i + 1] += Math.cos(elapsed * 0.15 + p) * 0.0003
+    arr[i + 2] += Math.sin(elapsed * 0.18 + p * 1.2) * 0.0004
   }
 }
 
@@ -303,17 +347,97 @@ function randomInBounds(): [number, number, number] {
   ]
 }
 
-function createPetals(count: number): THREE.Points {
+function createInstancedPetals(count: number): THREE.InstancedMesh {
+  const geo = new THREE.PlaneGeometry(1, 1)
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xffbddb,
+    transparent: true,
+    opacity: 0.7,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  })
+  const mesh = new THREE.InstancedMesh(geo, mat, count)
+  mesh.name = 'bg-petals'
+  mesh.frustumCulled = false
+
   const positions = new Float32Array(count * 3)
-  particleVelocities = new Float32Array(count)
-  particlePhases = new Float32Array(count)
+  const velocities = new Float32Array(count)
+  const phases = new Float32Array(count)
+  const rotations = new Float32Array(count * 3)
+  const rotSpeeds = new Float32Array(count * 3)
+  const scales = new Float32Array(count)
+
   for (let i = 0; i < count; i++) {
     const [x, y, z] = randomInBounds()
-    positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
-    particleVelocities[i] = 0.1 + Math.random() * 0.24
-    particlePhases[i] = Math.random() * Math.PI * 2
+    const i3 = i * 3
+    positions[i3] = x; positions[i3 + 1] = y; positions[i3 + 2] = z
+    velocities[i] = 0.1 + Math.random() * 0.24
+    phases[i] = Math.random() * Math.PI * 2
+    rotations[i3] = Math.random() * Math.PI * 2
+    rotations[i3 + 1] = Math.random() * Math.PI * 2
+    rotations[i3 + 2] = Math.random() * Math.PI * 2
+    rotSpeeds[i3] = (Math.random() - 0.5) * 1.5
+    rotSpeeds[i3 + 1] = (Math.random() - 0.5) * 1.2
+    rotSpeeds[i3 + 2] = (Math.random() - 0.5) * 0.8
+    scales[i] = 0.03 + Math.random() * 0.05 // 0.03-0.08
+
+    _dummy.position.set(x, y, z)
+    _dummy.rotation.set(rotations[i3], rotations[i3 + 1], rotations[i3 + 2])
+    _dummy.scale.setScalar(scales[i])
+    _dummy.updateMatrix()
+    mesh.setMatrixAt(i, _dummy.matrix)
   }
-  return makePoints('bg-petals', positions, { color: 0xffbddb, size: 0.055, opacity: 0.72 })
+
+  instancedData = { positions, velocities, phases, rotations, rotSpeeds, scales, count }
+  scene.add(mesh)
+  return mesh
+}
+
+function createInstancedLeaves(count: number): THREE.InstancedMesh {
+  // Wider plane for leaf shape
+  const geo = new THREE.PlaneGeometry(1.4, 1)
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x8ab848,
+    transparent: true,
+    opacity: 0.65,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  })
+  const mesh = new THREE.InstancedMesh(geo, mat, count)
+  mesh.name = 'bg-leaves'
+  mesh.frustumCulled = false
+
+  const positions = new Float32Array(count * 3)
+  const velocities = new Float32Array(count)
+  const phases = new Float32Array(count)
+  const rotations = new Float32Array(count * 3)
+  const rotSpeeds = new Float32Array(count * 3)
+  const scales = new Float32Array(count)
+
+  for (let i = 0; i < count; i++) {
+    const [x, y, z] = randomInBounds()
+    const i3 = i * 3
+    positions[i3] = x; positions[i3 + 1] = y; positions[i3 + 2] = z
+    velocities[i] = 0.06 + Math.random() * 0.12
+    phases[i] = Math.random() * Math.PI * 2
+    rotations[i3] = Math.random() * Math.PI * 2
+    rotations[i3 + 1] = Math.random() * Math.PI * 2
+    rotations[i3 + 2] = Math.random() * Math.PI * 2
+    rotSpeeds[i3] = (Math.random() - 0.5) * 1.2
+    rotSpeeds[i3 + 1] = (Math.random() - 0.5) * 1.0
+    rotSpeeds[i3 + 2] = (Math.random() - 0.5) * 0.6
+    scales[i] = 0.04 + Math.random() * 0.06 // 0.04-0.1
+
+    _dummy.position.set(x, y, z)
+    _dummy.rotation.set(rotations[i3], rotations[i3 + 1], rotations[i3 + 2])
+    _dummy.scale.setScalar(scales[i])
+    _dummy.updateMatrix()
+    mesh.setMatrixAt(i, _dummy.matrix)
+  }
+
+  instancedData = { positions, velocities, phases, rotations, rotSpeeds, scales, count }
+  scene.add(mesh)
+  return mesh
 }
 
 function createSunsetDust(count: number): THREE.Points {
@@ -325,7 +449,7 @@ function createSunsetDust(count: number): THREE.Points {
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-sunset-dust', positions, { color: 0xffc860, size: 0.035, opacity: 0.42 })
+  return makePoints('bg-sunset-dust', positions, { color: 0xffc860, size: 0.06, opacity: 0.55 })
 }
 
 function createBubbles(count: number): THREE.Points {
@@ -335,11 +459,10 @@ function createBubbles(count: number): THREE.Points {
   for (let i = 0; i < count; i++) {
     const [x, y, z] = randomInBounds()
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
-    particleVelocities[i] = 0.06 + Math.random() * 0.12 // gentle upward
+    particleVelocities[i] = 0.06 + Math.random() * 0.12
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  // Varying sizes via sizeAttenuation
-  return makePoints('bg-bubbles', positions, { color: 0xc8e8ff, size: 0.045, opacity: 0.5 })
+  return makePoints('bg-bubbles', positions, { color: 0xc8e8ff, size: 0.1, opacity: 0.55 })
 }
 
 function createStars(count: number): THREE.Points {
@@ -355,7 +478,7 @@ function createStars(count: number): THREE.Points {
   }
   particleVelocities = null
   particlePhases = null
-  return makePoints('bg-stars', positions, { color: 0xe6edff, size: 0.042, opacity: 0.64, additive: false })
+  return makePoints('bg-stars', positions, { color: 0xe6edff, size: 0.05, opacity: 0.7, additive: false })
 }
 
 function createShootingStars(count: number): THREE.Points {
@@ -363,28 +486,13 @@ function createShootingStars(count: number): THREE.Points {
   const velocities = new Float32Array(count * 2)
   const lifetimes = new Float32Array(count)
   const maxLifetimes = new Float32Array(count)
-  // All start inactive
   for (let i = 0; i < count; i++) {
     positions[i * 3] = 0; positions[i * 3 + 1] = -10; positions[i * 3 + 2] = 0
     lifetimes[i] = 0
     maxLifetimes[i] = 0.5
   }
   shootingStarData = { velocities, lifetimes, maxLifetimes }
-  return makePoints('bg-shooting-stars', positions, { color: 0xffffff, size: 0.06, opacity: 0 })
-}
-
-function createLeaves(count: number): THREE.Points {
-  const positions = new Float32Array(count * 3)
-  particleVelocities = new Float32Array(count)
-  particlePhases = new Float32Array(count)
-  for (let i = 0; i < count; i++) {
-    const [x, y, z] = randomInBounds()
-    positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
-    particleVelocities[i] = 0.06 + Math.random() * 0.12 // slower than petals
-    particlePhases[i] = Math.random() * Math.PI * 2
-  }
-  // Mix of green and amber — pick a middle tone
-  return makePoints('bg-leaves', positions, { color: 0xa8b868, size: 0.05, opacity: 0.58 })
+  return makePoints('bg-shooting-stars', positions, { color: 0xffffff, size: 0.07, opacity: 0 })
 }
 
 function createSnowflakes(count: number): THREE.Points {
@@ -394,10 +502,10 @@ function createSnowflakes(count: number): THREE.Points {
   for (let i = 0; i < count; i++) {
     const [x, y, z] = randomInBounds()
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
-    particleVelocities[i] = 0.04 + Math.random() * 0.08 // very gentle
+    particleVelocities[i] = 0.04 + Math.random() * 0.08
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-snowflakes', positions, { color: 0xe8d8f8, size: 0.03, opacity: 0.42 })
+  return makePoints('bg-snowflakes', positions, { color: 0xe8d8f8, size: 0.05, opacity: 0.55 })
 }
 
 function createCafeDust(count: number): THREE.Points {
@@ -409,7 +517,7 @@ function createCafeDust(count: number): THREE.Points {
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-cafe-dust', positions, { color: 0xffd8b8, size: 0.032, opacity: 0.36 })
+  return makePoints('bg-cafe-dust', positions, { color: 0xffd8b8, size: 0.05, opacity: 0.45 })
 }
 
 function createMinimalDust(count: number): THREE.Points {
@@ -421,7 +529,7 @@ function createMinimalDust(count: number): THREE.Points {
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-minimal-dust', positions, { color: 0xe0ddd8, size: 0.02, opacity: 0.15 })
+  return makePoints('bg-minimal-dust', positions, { color: 0xe0ddd8, size: 0.035, opacity: 0.25 })
 }
 
 function makePoints(
@@ -470,7 +578,7 @@ function applyBackgroundScene(name: BackgroundPreset) {
   switch (name) {
     case 'sakura':
       if (!skipSceneBg) scene.background = buildGradientTexture(['#ffe7f4', '#f8cde7', '#efb7dc'])
-      activeParticles = createPetals(35)
+      activeInstancedMesh = createInstancedPetals(30)
       break
     case 'night':
       if (!skipSceneBg) scene.background = buildGradientTexture(['#0f1630', '#192751', '#30477f'])
@@ -491,7 +599,7 @@ function applyBackgroundScene(name: BackgroundPreset) {
       break
     case 'forest':
       if (!skipSceneBg) scene.background = buildGradientTexture(['#a8d4a0', '#6a9e60', '#4a7a3a'])
-      activeParticles = createLeaves(25)
+      activeInstancedMesh = createInstancedLeaves(22)
       break
     case 'lavender':
       if (!skipSceneBg) scene.background = buildGradientTexture(['#e8d0f4', '#d4b8e8', '#b898d8'])
@@ -557,6 +665,13 @@ function clearParticles() {
     activeShootingStars = null
     shootingStarData = null
   }
+  if (activeInstancedMesh) {
+    scene.remove(activeInstancedMesh)
+    activeInstancedMesh.geometry.dispose()
+    ;(activeInstancedMesh.material as THREE.Material).dispose()
+    activeInstancedMesh = null
+    instancedData = null
+  }
   particleVelocities = null
   particlePhases = null
 }
@@ -569,7 +684,6 @@ function clearTexture() {
 
 export function applyThemeParticles(theme: string) {
   const preset = (theme as BackgroundPreset)
-  // Direct 1:1 mapping — if the theme name is a valid preset, use it; otherwise default
   const valid: BackgroundPreset[] = ['sakura', 'sunset', 'night', 'cafe', 'ocean', 'forest', 'lavender', 'minimal']
   applyBackgroundScene(valid.includes(preset as BackgroundPreset) ? preset as BackgroundPreset : 'default')
 }

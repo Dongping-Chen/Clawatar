@@ -5,6 +5,7 @@ import type { VRM } from '@pixiv/three-vrm'
 import type { VRMAnimation } from '@pixiv/three-vrm-animation'
 import { scene } from './scene'
 import { state } from './main'
+// outline removed — will re-add properly later
 import * as THREE from 'three'
 
 let loader: GLTFLoader
@@ -40,6 +41,15 @@ export async function loadVRM(urlOrBlob: string | Blob): Promise<VRM> {
   // VRM models face +Z by default; camera looks down -Z
   // Most VRM models need rotation, but some don't — try 0 first
   vrm.scene.rotation.y = 0
+
+  // Hide model until idle animation starts (avoid T-pose flash)
+  vrm.scene.visible = false
+
+  vrm.scene.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.castShadow = true
+    }
+  })
 
   scene.add(vrm.scene)
   state.vrm = vrm

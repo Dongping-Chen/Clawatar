@@ -38,6 +38,15 @@ export default defineConfig({
     host: '0.0.0.0',
     port: vitePort,
   },
-  build: { target: 'ES2020' },
+  base: './',
+  build: {
+    target: 'ES2020',
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        preview: resolve(__dirname, 'preview.html'),
+      },
+    },
+  },
   plugins: [serveConfig()],
 })

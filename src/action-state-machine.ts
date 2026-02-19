@@ -1,9 +1,10 @@
 import type { CharacterState, IdleConfig } from './types'
 import { state } from './main'
 import { getActivityMode } from './activity-modes'
-import { loadAndPlayAction, playBaseIdle } from './animation'
-import { setExpression, resetExpressions } from './expressions'
+import { loadAndPlayAction, playBaseIdle, warmupAnimationCache } from './animation'
+import { setExpression, resetExpressionsImmediately } from './expressions'
 import { triggerSpeak, playAudioLipSync, resetLipSync } from './lip-sync'
+import { broadcastSyncCommand } from './sync-bridge'
 
 export const idleConfig: IdleConfig = {
   idleActionInterval: 6,     // Check every 6 seconds (was 12)
@@ -14,6 +15,10 @@ export const idleConfig: IdleConfig = {
 
 // noidle mode: follower instances skip idle animation picks, only respond to WS commands
 const isFollower = new URLSearchParams(window.location.search).has('noidle')
+
+export function setIdleAnimationsEnabled(enabled: boolean) {
+  state.idleAnimationsEnabled = enabled
+}
 
 // Meeting mode: limited idle animations (subtle only), respond to speak commands
 let meetingMode = false
@@ -121,6 +126,22 @@ const IDLE_CATEGORIES = {
   ],
 }
 
+const HOT_SYNC_ACTIONS: string[] = Array.from(new Set([
+  '119_Idle',
+  ...MEETING_IDLE_CATEGORIES,
+  ...Object.values(IDLE_CATEGORIES).flat(),
+]))
+
+let warmupStarted = false
+
+function ensureAnimationWarmupStarted() {
+  if (warmupStarted) return
+  warmupStarted = true
+
+  // Preload common/idle VRMA files in background so cross-device sync can start immediately.
+  void warmupAnimationCache(HOT_SYNC_ACTIONS, 3)
+}
+
 // Default weights (overridden by time-of-day)
 const CATEGORY_WEIGHTS: Array<[keyof typeof IDLE_CATEGORIES, number]> = [
   ['neutral', 0.22],
@@ -193,10 +214,30 @@ function getTimeAdjustedWeights(): Array<[keyof typeof IDLE_CATEGORIES, number]>
   }
 }
 
+/**
+ * Seeded PRNG (mulberry32) — ensures all devices pick the same animation
+ * when using the same seed (time-window based).
+ */
+function seededRandom(seed: number): () => number {
+  let t = seed | 0
+  return () => {
+    t = (t + 0x6D2B79F5) | 0
+    let r = Math.imul(t ^ (t >>> 15), 1 | t)
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r)
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/** Current sync seed — based on 10-second time windows so all devices align */
+function getSyncSeed(): number {
+  return Math.floor(Date.now() / 10000)
+}
+
 function pickIdleActionWithCategory(): { action: string; category: keyof typeof IDLE_CATEGORIES } {
-  // Time-aware weighted random category pick
+  // Use time-synced seed so all devices pick the same animation
+  const rng = seededRandom(getSyncSeed())
   const weights = getTimeAdjustedWeights()
-  const roll = Math.random()
+  const roll = rng()
   let cumulative = 0
   let category: keyof typeof IDLE_CATEGORIES = 'neutral'
   for (const [cat, weight] of weights) {
@@ -207,7 +248,7 @@ function pickIdleActionWithCategory(): { action: string; category: keyof typeof 
     }
   }
   const actions = IDLE_CATEGORIES[category]
-  const action = actions[Math.floor(Math.random() * actions.length)]
+  const action = actions[Math.floor(rng() * actions.length)]
   return { action, category }
 }
 
@@ -242,9 +283,18 @@ function getExpressionForCategory(category: keyof typeof IDLE_CATEGORIES): { nam
 
 let currentIdleCategory: keyof typeof IDLE_CATEGORIES = 'neutral'
 
+interface ActionSyncOptions {
+  sync?: boolean
+  expression?: { name: string; weight: number }
+}
+
 export function updateStateMachine(elapsed: number) {
+  ensureAnimationWarmupStarted()
+
   // Follower mode: don't pick idle animations, only respond to WS play_action
   if (isFollower) return
+  // Avatar config can disable random idle picks
+  if (!state.idleAnimationsEnabled) return
   // Activity mode handles its own animations
   if (getActivityMode() !== 'free') return
 
@@ -254,13 +304,20 @@ export function updateStateMachine(elapsed: number) {
 
   lastIdleAttempt = elapsed
 
+  // Use synced RNG for chance check too (so all devices agree on skip/act)
+  const syncRng = seededRandom(getSyncSeed())
+  // Consume first two values (used by pickIdleActionWithCategory), use 3rd for chance
+  syncRng(); syncRng()
+  const chanceRoll = syncRng()
+
   // Meeting mode: less frequent, subtle animations only
   if (meetingMode) {
-    if (Math.random() > 0.2) return  // 20% chance (less frequent)
-    const pick = MEETING_IDLE_CATEGORIES[Math.floor(Math.random() * MEETING_IDLE_CATEGORIES.length)]
+    if (chanceRoll > 0.2) return  // 20% chance (less frequent)
+    const meetRng = seededRandom(getSyncSeed() + 1)
+    const pick = MEETING_IDLE_CATEGORIES[Math.floor(meetRng() * MEETING_IDLE_CATEGORIES.length)]
     setState('action')
     loadAndPlayAction(pick, false, () => {
-      resetExpressions()
+      resetExpressionsImmediately()
       playBaseIdle().then(() => {
         setState('idle')
         holdUntil = elapsed + 12 + Math.random() * 15  // longer hold between meeting idles
@@ -269,7 +326,7 @@ export function updateStateMachine(elapsed: number) {
     return
   }
 
-  if (Math.random() > idleConfig.idleActionChance) return
+  if (chanceRoll > idleConfig.idleActionChance) return
 
   const { action: actionId, category } = pickIdleActionWithCategory()
   currentIdleCategory = category
@@ -287,37 +344,47 @@ export function updateStateMachine(elapsed: number) {
 
   loadAndPlayAction(actionId, false, () => {
     // ALWAYS reset expressions when idle animation finishes
-    resetExpressions()
+    resetExpressionsImmediately()
     playBaseIdle().then(() => {
       setState('idle')
+      // Use synced hold duration so devices stay in lockstep
+      const holdRng = seededRandom(getSyncSeed() + 99)
       holdUntil = elapsed + idleConfig.idleMinHoldSeconds +
-        Math.random() * (idleConfig.idleMaxHoldSeconds - idleConfig.idleMinHoldSeconds)
+        holdRng() * (idleConfig.idleMaxHoldSeconds - idleConfig.idleMinHoldSeconds)
     })
   }, category).catch(() => {
-    resetExpressions()
+    resetExpressionsImmediately()
     setState('idle')
   })
 }
 
-/** Broadcast idle action + expression to WS server for follower sync */
+/** Broadcast idle action + expression to relay + native bridge for cross-device sync */
 function broadcastIdleAction(actionId: string, expression?: { name: string; weight: number } | null) {
-  try {
-    const ws = (window as any).__clawatar_ws as WebSocket | undefined
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      const msg: any = { type: 'play_action', action_id: actionId }
-      if (expression) {
-        msg.expression = expression.name
-        msg.expression_weight = expression.weight
-      }
-      ws.send(JSON.stringify(msg))
-    }
-  } catch { /* ignore */ }
+  const msg: any = { type: 'play_action', action_id: actionId }
+  if (expression) {
+    msg.expression = expression.name
+    msg.expression_weight = expression.weight
+  }
+  broadcastSyncCommand(msg)
 }
 
-export async function requestAction(actionId: string) {
+export async function requestAction(actionId: string, options: ActionSyncOptions = {}) {
+  ensureAnimationWarmupStarted()
+
+  const shouldSync = options.sync ?? true
+
+  if (shouldSync) {
+    const syncMessage: any = { type: 'play_action', action_id: actionId }
+    if (options.expression) {
+      syncMessage.expression = options.expression.name
+      syncMessage.expression_weight = options.expression.weight
+    }
+    broadcastSyncCommand(syncMessage)
+  }
+
   setState('action')
   await loadAndPlayAction(actionId, false, () => {
-    resetExpressions()  // Clear expression overrides when action ends
+    resetExpressionsImmediately()  // Clear expression overrides right when action ends
     playBaseIdle().then(() => setState('idle'))
   })
 }
@@ -370,7 +437,7 @@ export async function requestSpeakAudio(audioUrl: string, actionId?: string, exp
 
 function finishSpeaking() {
   resetLipSync()
-  resetExpressions()
+  resetExpressionsImmediately()
   playBaseIdle().then(() => setState('idle'))
 }
 
@@ -398,7 +465,7 @@ export function requestFinishSpeaking(): void {
 
 export function requestReset() {
   resetLipSync()
-  resetExpressions()
+  resetExpressionsImmediately()
   playBaseIdle().then(() => setState('idle'))
 }
 

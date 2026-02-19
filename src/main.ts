@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { initScene, scene, camera, renderer, controls, clock, composer } from './scene'
+import { initScene, initContactShadow, updateContactShadow, scene, camera, renderer, controls, clock, composer, outlineEffect, warmTintVRMMaterials, setTransparentBackground } from './scene'
 import { initLookAt, updateLookAt, setMeetingLookAt } from './look-at'
 import { updateBlink } from './blink'
 import { updateLipSync } from './lip-sync'
@@ -14,16 +14,22 @@ import { initTouchReactions } from './touch-reactions'
 import { initReactiveIdle, updateReactiveIdle } from './reactive-idle'
 import { initEmotionBar } from './emotion-bar'
 import { initBackgrounds, updateBackgroundEffects } from './backgrounds'
+import { initGradientBackground, updateGradientBackground } from './gradient-background'
 import { initCameraPresets, updateCameraPresets } from './camera-presets'
 import { initRoomScene, enableRoomMode, isRoomMode, getWalkableBounds, updateRoom, clampCameraToRoom, updateRoomWallTransparency } from './room-scene'
 import { updateActivityMode } from './activity-modes'
 import { loadRoomGLB, isSceneLoaded, getSceneWalkBounds, SCENE_LAYER, SCENE_EXPOSURE, CHAR_EXPOSURE } from './scene-system'
+import { broadcastSyncCommand } from './sync-bridge'
+import { initAmbientMusic, getMusicState, toggleMusic } from './ambient-music'
+import { initAmbienceMixer } from './ambience-mixer'
 import type { AppState } from './types'
 
 export const state: AppState = {
   vrm: null,
   mixer: null,
   autoBlinkEnabled: true,
+  idleAnimationsEnabled: true,
+  touchReactionsEnabled: true,
   mouseLookEnabled: true,
   characterState: 'idle',
 }
@@ -31,6 +37,13 @@ export const state: AppState = {
 // Debug: expose state + scene for console material inspection
 ;(window as any).__app_state = state
 ;(window as any).__three_scene = scene
+
+// Expose character visibility toggle for iOS (hide character on chat page, keep bg rendering)
+;(window as any).setCharacterVisible = (visible: boolean) => {
+  if (state.vrm) {
+    state.vrm.scene.visible = visible
+  }
+}
 
 // Pre-allocated vectors for render loop (avoid per-frame GC pressure)
 const _hipsWorld = new THREE.Vector3()
@@ -62,7 +75,7 @@ async function autoLoad() {
   // Try config (fetched at runtime)
   let configModelUrl = ''
   try {
-    const resp = await fetch('/clawatar.config.json')
+    const resp = await fetch('./clawatar.config.json')
     if (resp.ok) {
       const config = await resp.json()
       configModelUrl = config.model?.url || ''
@@ -73,9 +86,16 @@ async function autoLoad() {
   const savedUrl = localStorage.getItem('vrm-model-url')
   const modelUrl = configModelUrl || savedUrl
 
-  if (modelUrl) {
+  if (modelUrl && !isBgOnly) {
     try {
-      await loadVRM(modelUrl)
+      const vrm = await loadVRM(modelUrl)
+      vrm.scene.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.castShadow = true
+        }
+      })
+      // Warm-tint materials for high-key anime skin look
+      if (isEmbed) warmTintVRMMaterials()
       localStorage.setItem('vrm-model-url', modelUrl)
       hideDropPrompt()
       console.log('Auto-loaded model:', modelUrl)
@@ -110,21 +130,82 @@ async function autoLoad() {
 const params = new URLSearchParams(window.location.search)
 const isEmbed = params.has('embed')
 const isMeeting = params.has('meeting')
+const isTransparent = params.has('transparent')
+const isBgOnly = params.has('bgonly')
+
+function initMusicToggleButton() {
+  const button = document.createElement('button')
+  button.id = 'music-toggle-btn'
+  button.type = 'button'
+  button.textContent = '🎵'
+  button.setAttribute('aria-label', 'Toggle ambient music')
+  button.title = 'Toggle ambient music'
+
+  Object.assign(button.style, {
+    position: 'fixed',
+    right: '58px',
+    bottom: '14px',
+    zIndex: '56',
+    width: '32px',
+    height: '28px',
+    borderRadius: '999px',
+    border: '1px solid rgba(242, 150, 182, 0.44)',
+    background: 'rgba(255, 245, 250, 0.8)',
+    backdropFilter: 'blur(12px)',
+    boxShadow: '0 8px 18px rgba(166, 84, 126, 0.2)',
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '14px',
+    lineHeight: '1',
+    padding: '0',
+  })
+
+  const syncVisual = () => {
+    const { playing } = getMusicState()
+    button.style.opacity = playing ? '1' : '0.55'
+    button.style.filter = playing ? 'none' : 'grayscale(0.4)'
+  }
+
+  button.addEventListener('click', () => {
+    const nextEnabled = !getMusicState().playing
+    void toggleMusic(nextEnabled)
+    window.setTimeout(syncVisual, 50)
+  })
+
+  syncVisual()
+  document.body.appendChild(button)
+}
 
 function init() {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement
   initScene(canvas)
+  initContactShadow()
+  if (!isTransparent) {
+    initGradientBackground(scene)
+  }
   initLookAt(canvas)
 
   // Enhanced lighting for both modes — embed gets full "holy light", web gets a toned-down version
   import('./scene').then(m => {
-    if (isEmbed) {
-      // Embed mode: full intensity (transparent bg, iOS app provides background)
+    if (isTransparent) {
+      // Transparent mode: character only, no gradient, transparent canvas
+      m.enhanceLightingForEmbed()
+      m.setTransparentBackground(true)
+      hideAllUI()
+      m.camera.position.set(0, 1.2, 3.0)
+      m.controls.target.set(0, 0.9, 0)
+      m.controls.update()
+      m.controls.enableRotate = false
+      m.controls.enablePan = false
+      m.controls.enableZoom = false
+    } else if (isEmbed) {
+      // Embed mode: full intensity with gradient background
       m.enhanceLightingForEmbed()
       hideAllUI()
-      m.setTransparentBackground(true)
-      m.camera.position.set(0, 1.1, 3.6)
-      m.controls.target.set(0, 0.82, 0)
+      m.camera.position.set(0, 1.2, 3.0)
+      m.controls.target.set(0, 0.9, 0)
       m.controls.update()
       m.controls.enableRotate = false
       m.controls.enablePan = false
@@ -201,6 +282,12 @@ function init() {
     // Enable room mode by default for web and meeting
     enableRoomMode()
   }
+  initAmbientMusic()
+  initAmbienceMixer()
+  if (!isEmbed && !isMeeting) {
+    initMusicToggleButton()
+  }
+
   initChatAndVoice()
   connectWS()
   autoLoad()
@@ -217,16 +304,21 @@ function init() {
   }
   document.addEventListener('keydown', async (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+    // Disable scene hotkeys in embed mode (iOS/iPad WKWebView)
+    const isEmbed = new URLSearchParams(window.location.search).has('embed')
+    if (isEmbed) return
     const roomPath = ROOM_KEYS[e.key]
     if (roomPath !== undefined) {
       if (roomPath === '') {
         const { unloadScene } = await import('./scene-system')
         unloadScene()
+        broadcastSyncCommand({ type: 'set_scene', room: '' })
         console.log('[keyboard] Scene unloaded')
       } else {
         try {
           const mod = await import('./scene-system')
           await mod.loadRoomGLB(roomPath)
+          broadcastSyncCommand({ type: 'set_scene', room: roomPath })
           console.log('[keyboard] Loaded:', roomPath)
         } catch (err) {
           console.error('[keyboard] Load failed:', err)
@@ -242,12 +334,16 @@ function init() {
 }
 
 function hideAllUI() {
-  // Inject CSS to hide ALL UI elements — only keep canvas
+  // Inject CSS to hide UI. In embed mode, hard-lock to canvas-only rendering.
   const style = document.createElement('style')
+  const hiddenSelector = isEmbed
+    ? `body > :not(#canvas), body::before`
+    : `#controls, #chat-container, #emotion-bar, #drop-overlay,
+       #status, #model-prompt, #animated-bg,
+       #name-card, body::before`
+
   style.textContent = `
-    #controls, #chat-container, #emotion-bar, #drop-overlay,
-    #status, #model-prompt, #particles-canvas, #animated-bg,
-    #name-card, body::before {
+    ${hiddenSelector} {
       display: none !important;
     }
     body {
@@ -255,17 +351,35 @@ function hideAllUI() {
       margin: 0 !important;
       background: transparent !important;
     }
+    ${isEmbed ? `
+    body {
+      color: transparent !important;
+      font-size: 0 !important;
+    }
+    ` : ''}
     #canvas {
       position: fixed !important;
       inset: 0 !important;
       width: 100vw !important;
       height: 100vh !important;
+      display: block !important;
+      visibility: visible !important;
     }
   `
   document.head.appendChild(style)
 
-  // Also observe DOM for dynamically created model-prompt
+  // Observe DOM for dynamically created UI nodes.
   const observer = new MutationObserver(() => {
+    if (isEmbed) {
+      for (const child of Array.from(document.body.children)) {
+        const el = child as HTMLElement
+        if (el.id !== 'canvas') {
+          el.style.display = 'none'
+        }
+      }
+      return
+    }
+
     const prompt = document.getElementById('model-prompt')
     if (prompt) prompt.style.display = 'none'
   })
@@ -275,8 +389,44 @@ function hideAllUI() {
   window.addEventListener('message', (event) => {
     try {
       const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data
+      if (!data || typeof data !== 'object') return
+
       if (data.type === 'loadModel' && data.url) {
-        loadVRM(data.url).catch(console.error)
+        loadVRM(data.url)
+          .then((vrm) => {
+            vrm.scene.traverse((child) => {
+              if (child instanceof THREE.Mesh) {
+                child.castShadow = true
+              }
+            })
+            if (isEmbed) warmTintVRMMaterials()
+            return playBaseIdle('119_Idle')
+          })
+          .catch(console.error)
+        return
+      }
+
+      if (data.type === 'sync_avatar_command' && data.command) {
+        ;(window as any).__clawatar_receive_sync_command?.(data.command)
+        return
+      }
+
+      if (data.type === 'set_camera_preset') {
+        import('./camera-presets')
+          .then(m => m.setCameraPreset(data.preset ?? 'full', data.duration))
+          .catch(console.error)
+        return
+      }
+
+      if (data.type === 'adjust_camera_preset') {
+        import('./camera-presets')
+          .then(m => m.adjustPresetOffset(data.preset, data.distance ?? 1.0, data.height ?? 0))
+          .catch(console.error)
+        return
+      }
+
+      if (typeof data.type === 'string') {
+        ;(window as any).__clawatar_receive_sync_command?.(data)
       }
     } catch {}
   })
@@ -293,7 +443,10 @@ function animate() {
   applyExpressionOverrides()
   updateBlink(elapsed)
   updateLipSync()
-  if (state.vrm) state.vrm.update(delta)
+  if (state.vrm) {
+    state.vrm.update(delta)
+
+  }
 
   // ROOM/SCENE MODE: Clamp VRM root position to walkable bounds
   // Some animations have root motion that moves the character into walls/furniture
@@ -352,6 +505,7 @@ function animate() {
   updateActivityMode(elapsed)
   updateRoom(elapsed)
   updateBackgroundEffects(elapsed, delta)
+  if (!isTransparent) updateGradientBackground(elapsed, delta)
   updateCameraPresets(performance.now() / 1000)
   clampCameraToRoom()
   updateRoomWallTransparency()
@@ -372,12 +526,15 @@ function animate() {
     }
   }
 
+
   updateLookAt()
 
   controls.update()
 
   // Single-pass rendering: scene GLB emissive is pre-dimmed in loadRoomGLB.
   // Use composer (with bloom) for ALL modes — character gets glow effect.
+  updateContactShadow()
+
   if (composer) {
     composer.render()
   } else {

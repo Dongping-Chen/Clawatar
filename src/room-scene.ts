@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { scene, renderer, lightingRig, camera, controls, setupRoomBloom, teardownRoomBloom, roomBloomPass } from './scene'
+import { scene, renderer, lightingRig, camera, controls, setupRoomBloom, teardownRoomBloom, roomBloomPass, setThemeBackgroundSuppressed } from './scene'
 
 let roomGroup: THREE.Group
 let roomLights: THREE.Light[] = []
@@ -1420,6 +1420,7 @@ export function initRoomScene(): void {
 export function enableRoomMode(): void {
   if (_isRoomMode) return
   _isRoomMode = true
+  setThemeBackgroundSuppressed(true)
 
   // Save and disable outdoor lights
   savedOutdoorState = []
@@ -1510,8 +1511,7 @@ export function disableRoomMode(): void {
   // Remove fog
   scene.fog = null
 
-  scene.background = new THREE.Color(0xf8e8f0)
-  renderer.setClearColor(0xf8e8f0, 1)
+  setThemeBackgroundSuppressed(false)
   renderer.toneMappingExposure = 1.06
 
   // Restore camera constraints

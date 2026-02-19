@@ -45,7 +45,9 @@ export function updateReactiveIdle(_elapsed: number, _delta: number) {
     wasAway = false
     boredTriggered = false
     setExpression('happy', 0.5, 3.0)
-    requestAction(WAVE_ANIMATION).catch(() => {})
+    requestAction(WAVE_ANIMATION, {
+      expression: { name: 'happy', weight: 0.5 },
+    }).catch(() => {})
     return
   }
 
@@ -60,7 +62,9 @@ export function updateReactiveIdle(_elapsed: number, _delta: number) {
     boredTriggered = true
     const anim = BORED_ANIMATIONS[Math.floor(Math.random() * BORED_ANIMATIONS.length)]
     setExpression('relaxed', 0.3, 1.5)
-    requestAction(anim).catch(() => {})
+    requestAction(anim, {
+      expression: { name: 'relaxed', weight: 0.3 },
+    }).catch(() => {})
   }
 }
 

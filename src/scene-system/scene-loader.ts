@@ -580,8 +580,6 @@ export function unloadCurrentScene(): void {
   })
 
   // Restore default renderer settings
-  scene.background = new THREE.Color(0xf8e8f0)
-  renderer.setClearColor(0xf8e8f0, 1)
   renderer.toneMappingExposure = 1.06
 
   // Reset camera orbit limits (remove azimuth restriction)

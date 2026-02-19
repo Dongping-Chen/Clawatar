@@ -1,4 +1,5 @@
 import { state } from './main'
+import { broadcastSyncCommand } from './sync-bridge'
 
 interface ExpressionTarget {
   target: number
@@ -9,11 +10,30 @@ interface ExpressionTarget {
 const expressionTargets: Map<string, ExpressionTarget> = new Map()
 const DEFAULT_SPEED = 3.0
 
-export function setExpression(name: string, targetWeight: number = 1.0, transitionSpeed: number = DEFAULT_SPEED) {
+interface SetExpressionOptions {
+  sync?: boolean
+}
+
+interface ResetExpressionOptions {
+  immediate?: boolean
+}
+
+export function setExpression(
+  name: string,
+  targetWeight: number = 1.0,
+  transitionSpeed: number = DEFAULT_SPEED,
+  options: SetExpressionOptions = {},
+) {
+  const shouldSync = options.sync === true
+
   if (name === 'neutral') {
     resetExpressions(transitionSpeed)
+    if (shouldSync) {
+      broadcastSyncCommand({ type: 'set_expression', name: 'neutral', weight: 0 })
+    }
     return
   }
+
   const existing = expressionTargets.get(name)
   if (existing) {
     existing.target = targetWeight
@@ -21,13 +41,32 @@ export function setExpression(name: string, targetWeight: number = 1.0, transiti
   } else {
     expressionTargets.set(name, { target: targetWeight, current: 0, speed: transitionSpeed })
   }
+
+  if (shouldSync) {
+    broadcastSyncCommand({ type: 'set_expression', name, weight: targetWeight })
+  }
 }
 
-export function resetExpressions(speed: number = DEFAULT_SPEED) {
+export function resetExpressions(speed: number = DEFAULT_SPEED, options: ResetExpressionOptions = {}) {
+  const { vrm } = state
+
+  if (options.immediate) {
+    for (const name of expressionTargets.keys()) {
+      vrm?.expressionManager?.setValue(name, 0)
+    }
+
+    expressionTargets.clear()
+    return
+  }
+
   for (const entry of expressionTargets.values()) {
     entry.target = 0
     entry.speed = speed
   }
+}
+
+export function resetExpressionsImmediately() {
+  resetExpressions(DEFAULT_SPEED, { immediate: true })
 }
 
 /** Called every frame to lerp expressions toward targets */
@@ -49,6 +88,7 @@ export function updateExpressionTransitions(delta: number) {
 
   for (const name of toDelete) {
     expressionTargets.delete(name)
+    vrm.expressionManager.setValue(name, 0)
   }
 }
 

@@ -4,8 +4,66 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Clawatar</title>
+  <script>
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const root = document.documentElement;
+
+      if (params.has('embed')) {
+        root.classList.add('embed-mode', 'embed-only-mode');
+      }
+
+      if (params.has('meeting')) {
+        root.classList.add('embed-mode', 'meeting-mode');
+      }
+    })();
+  </script>
   <style>
+    html.embed-mode #controls,
+    html.embed-mode #chat-container,
+    html.embed-mode #emotion-bar,
+    html.embed-mode #drop-overlay,
+    html.embed-mode #status,
+    html.embed-mode #model-prompt,
+    html.embed-mode #animated-bg,
+    html.embed-mode #name-card {
+      display: none !important;
+    }
+
+    /* Hard lock for iOS embed: only keep the Three.js canvas visible. */
+    html.embed-only-mode body > :not(#canvas) {
+      display: none !important;
+    }
+
+    html.embed-mode body {
+      overflow: hidden !important;
+      margin: 0 !important;
+      background: transparent !important;
+    }
+
+    html.embed-only-mode body {
+      color: transparent !important;
+      font-size: 0 !important;
+    }
+
+    html.embed-mode body::before {
+      display: none !important;
+      content: none !important;
+    }
+
+    html.embed-mode #canvas {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      display: block !important;
+      visibility: visible !important;
+    }
+
     :root {
+      --theme-top: rgb(255, 224, 235);
+      --theme-mid: rgb(240, 208, 238);
+      --theme-bottom: rgb(224, 191, 242);
       --bg-1: #fce4ec;
       --bg-2: #e8d5f5;
       --bg-3: #d1c4e9;
@@ -37,7 +95,7 @@
       font-family: "Nunito", "M PLUS Rounded 1c", "Hiragino Maru Gothic ProN", "Avenir Next", sans-serif;
       font-weight: 500;
       color: var(--text-1);
-      background: #fce4ec;
+      background: linear-gradient(160deg, var(--theme-top) 0%, var(--theme-mid) 52%, var(--theme-bottom) 100%);
     }
 
     #animated-bg {
@@ -45,30 +103,23 @@
       inset: 0;
       z-index: -1;
       pointer-events: none;
-      background: linear-gradient(155deg, #fce4ec 0%, #e8d5f5 52%, #d1c4e9 100%);
-      animation: breathing-gradient 8s ease-in-out infinite;
+      background: linear-gradient(160deg, var(--theme-top) 0%, var(--theme-mid) 52%, var(--theme-bottom) 100%);
+      background-size: 160% 160%;
+      animation: clawatar-theme-pan 16s ease-in-out infinite;
     }
 
-    @keyframes breathing-gradient {
+    @keyframes clawatar-theme-pan {
       0% {
-        background: linear-gradient(155deg, #fce4ec 0%, #f3d5f0 40%, #d1c4e9 100%);
-        filter: hue-rotate(0deg) brightness(1);
-      }
-      25% {
-        background: linear-gradient(170deg, #ffe0f0 0%, #e8d5f5 50%, #c9b8e8 100%);
-        filter: hue-rotate(3deg) brightness(1.02);
+        background-position: 0% 0%;
+        filter: brightness(1);
       }
       50% {
-        background: linear-gradient(140deg, #fdd6ea 0%, #dfc8f0 45%, #d8cef2 100%);
-        filter: hue-rotate(-2deg) brightness(1.01);
-      }
-      75% {
-        background: linear-gradient(165deg, #ffe4f2 0%, #ecddf8 48%, #cfc2e6 100%);
-        filter: hue-rotate(2deg) brightness(1.03);
+        background-position: 100% 100%;
+        filter: brightness(1.04);
       }
       100% {
-        background: linear-gradient(155deg, #fce4ec 0%, #f3d5f0 40%, #d1c4e9 100%);
-        filter: hue-rotate(0deg) brightness(1);
+        background-position: 0% 0%;
+        filter: brightness(1);
       }
     }
 
@@ -81,15 +132,6 @@
       background:
         radial-gradient(circle at 22% 20%, rgba(255, 255, 255, 0.5), transparent 36%),
         radial-gradient(circle at 80% 72%, rgba(255, 255, 255, 0.35), transparent 40%);
-    }
-
-    #particles-canvas {
-      position: fixed;
-      inset: 0;
-      width: 100vw;
-      height: 100vh;
-      z-index: 1;
-      pointer-events: none;
     }
 
     #name-card {
@@ -924,7 +966,6 @@
 </head>
 <body>
   <div id="animated-bg"></div>
-  <canvas id="particles-canvas"></canvas>
   <canvas id="canvas"></canvas>
   <div id="drop-overlay">Drop your VRM model here~ ✨</div>
 
@@ -1042,76 +1083,5 @@
 
   <div id="status"><span class="ws-dot disconnected" id="ws-dot"></span>WS: disconnected</div>
   <script type="module" src="/src/main.ts"></script>
-  <script>
-  (function() {
-    const canvas = document.getElementById('particles-canvas');
-    const ctx = canvas.getContext('2d');
-    let W, H;
-    function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
-    resize();
-    window.addEventListener('resize', resize);
-
-    const SHAPES = ['circle', 'diamond', 'petal', 'star'];
-    const COLORS = ['rgba(255,107,157,', 'rgba(236,64,122,', 'rgba(209,196,233,', 'rgba(255,214,229,', 'rgba(248,168,196,'];
-    const particles = [];
-    const COUNT = 35;
-
-    for (let i = 0; i < COUNT; i++) {
-      particles.push({
-        x: Math.random() * W,
-        y: Math.random() * H,
-        size: 8 + Math.random() * 16,
-        shape: SHAPES[Math.floor(Math.random() * SHAPES.length)],
-        color: COLORS[Math.floor(Math.random() * COLORS.length)],
-        opacity: 0.15 + Math.random() * 0.3,
-        speedY: -(0.15 + Math.random() * 0.4),
-        speedX: (Math.random() - 0.5) * 0.3,
-        rotation: Math.random() * Math.PI * 2,
-        rotSpeed: (Math.random() - 0.5) * 0.01,
-      });
-    }
-
-    function drawShape(p) {
-      ctx.save();
-      ctx.translate(p.x, p.y);
-      ctx.rotate(p.rotation);
-      ctx.fillStyle = p.color + p.opacity + ')';
-      const s = p.size;
-      if (p.shape === 'circle') {
-        ctx.beginPath(); ctx.arc(0, 0, s/2, 0, Math.PI*2); ctx.fill();
-      } else if (p.shape === 'diamond') {
-        ctx.beginPath(); ctx.moveTo(0,-s/2); ctx.lineTo(s/3,0); ctx.lineTo(0,s/2); ctx.lineTo(-s/3,0); ctx.closePath(); ctx.fill();
-      } else if (p.shape === 'petal') {
-        ctx.beginPath(); ctx.ellipse(0, 0, s/4, s/2, 0, 0, Math.PI*2); ctx.fill();
-      } else if (p.shape === 'star') {
-        ctx.beginPath();
-        for (let i = 0; i < 5; i++) {
-          const a = (i*4*Math.PI/5) - Math.PI/2;
-          const r = i === 0 ? s/2 : s/2;
-          ctx[i===0?'moveTo':'lineTo'](Math.cos(a)*s/2, Math.sin(a)*s/2);
-          const b = a + 2*Math.PI/5;
-          ctx.lineTo(Math.cos(b)*s/5, Math.sin(b)*s/5);
-        }
-        ctx.closePath(); ctx.fill();
-      }
-      ctx.restore();
-    }
-
-    function animate() {
-      ctx.clearRect(0, 0, W, H);
-      for (const p of particles) {
-        p.y += p.speedY;
-        p.x += p.speedX;
-        p.rotation += p.rotSpeed;
-        if (p.y < -p.size) { p.y = H + p.size; p.x = Math.random() * W; }
-        if (p.x < -p.size) p.x = W + p.size;
-        if (p.x > W + p.size) p.x = -p.size;
-        drawShape(p);
-      }
-      requestAnimationFrame(animate);
-    }
-    animate();
-  })();
-  </script>
 </body>
 </html>

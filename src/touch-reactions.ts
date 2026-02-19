@@ -69,6 +69,13 @@ let downX = 0, downY = 0, downTime = 0
 let lastReactionTime = 0
 let recentTaps: number[] = []
 
+export function setTouchReactionsEnabled(enabled: boolean) {
+  state.touchReactionsEnabled = enabled
+  if (!enabled) {
+    recentTaps = []
+  }
+}
+
 export function initTouchReactions(canvas: HTMLCanvasElement) {
   injectParticleStyles()
 
@@ -77,6 +84,7 @@ export function initTouchReactions(canvas: HTMLCanvasElement) {
   })
 
   canvas.addEventListener('pointerup', (e) => {
+    if (!state.touchReactionsEnabled) return
     if (!state.vrm) return
     const dx = e.clientX - downX, dy = e.clientY - downY
     if (Math.sqrt(dx * dx + dy * dy) > TAP_MAX_DISTANCE) return
@@ -132,8 +140,9 @@ function classifyZone(p: THREE.Vector3): ZoneName {
 }
 
 function triggerReaction(reaction: TouchReaction) {
+  const expression = { name: reaction.expression, weight: reaction.intensity }
   setExpression(reaction.expression, reaction.intensity, 4.0)
-  requestAction(reaction.actionId).catch(() => {})
+  requestAction(reaction.actionId, { expression }).catch(() => {})
 }
 
 const PARTICLE_SHAPES: Record<string, string> = {

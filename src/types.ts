@@ -7,6 +7,8 @@ export interface AppState {
   vrm: VRM | null
   mixer: AnimationMixer | null
   autoBlinkEnabled: boolean
+  idleAnimationsEnabled: boolean
+  touchReactionsEnabled: boolean
   mouseLookEnabled: boolean
   characterState: CharacterState
 }

@@ -6,6 +6,11 @@ import { state } from './main'
 import { loadVRMA } from './vrm-loader'
 
 const animationCache = new Map<string, VRMAnimation>()
+const animationLoadPromises = new Map<string, Promise<VRMAnimation>>()
+const clipCache = new Map<string, AnimationClip>()
+const actionCache = new Map<string, AnimationAction>()
+
+let cachedSceneRef: object | null = null
 let currentAction: AnimationAction | null = null
 let baseIdleAction: AnimationAction | null = null
 export let currentCategory: string = 'idle'
@@ -14,10 +19,25 @@ export let currentCategory: string = 'idle'
 export let crossfadeScale = 2.0
 const CROSSFADE_MIN = 0.1
 const CROSSFADE_MAX = 2.0
+const ACTION_TO_IDLE_MIN_FADE = 0.45
 
 export function setCrossfadeScale(s: number) {
   crossfadeScale = Math.max(0.1, s)
   console.log(`[animation] crossfadeScale = ${crossfadeScale}`)
+}
+
+function ensureRuntimeCachesForCurrentModel(): void {
+  const sceneRef = state.vrm?.scene ?? null
+  if (sceneRef === cachedSceneRef) {
+    return
+  }
+
+  cachedSceneRef = sceneRef
+  clipCache.clear()
+  actionCache.clear()
+  currentAction = null
+  baseIdleAction = null
+  currentCategory = 'idle'
 }
 
 /**
@@ -48,63 +68,193 @@ function computePoseDistance(targetClip: AnimationClip): number {
 }
 
 /** Crossfade duration based on actual pose difference × scale. */
-function getCrossfadeDuration(targetClip: AnimationClip): number {
+function getCrossfadeDuration(targetClip: AnimationClip, targetCategory: string): number {
   const distance = computePoseDistance(targetClip)
-  const duration = CROSSFADE_MIN + distance * crossfadeScale
+  let duration = CROSSFADE_MIN + distance * crossfadeScale
+
+  // Action -> idle needs a gentler transition to avoid torso twist/lean artifacts.
+  if (targetCategory === 'idle' && currentCategory !== 'idle') {
+    duration = Math.max(duration, ACTION_TO_IDLE_MIN_FADE)
+  }
+
   return Math.min(duration, CROSSFADE_MAX)
 }
 
 async function getVRMA(actionId: string): Promise<VRMAnimation> {
-  if (animationCache.has(actionId)) return animationCache.get(actionId)!
+  const cached = animationCache.get(actionId)
+  if (cached) {
+    return cached
+  }
+
+  const inflight = animationLoadPromises.get(actionId)
+  if (inflight) {
+    return inflight
+  }
+
   const url = `/animations/${actionId}.vrma`
-  const vrma = await loadVRMA(url)
-  animationCache.set(actionId, vrma)
-  return vrma
+  const loadPromise = loadVRMA(url)
+    .then((vrma) => {
+      animationCache.set(actionId, vrma)
+      animationLoadPromises.delete(actionId)
+      return vrma
+    })
+    .catch((error) => {
+      animationLoadPromises.delete(actionId)
+      throw error
+    })
+
+  animationLoadPromises.set(actionId, loadPromise)
+  return loadPromise
 }
 
-export async function loadAndPlayAction(actionId: string, loop: boolean = false, onFinished?: () => void, category?: string): Promise<AnimationAction | null> {
-  const { vrm, mixer } = state
-  if (!vrm || !mixer) return null
+export async function preloadAction(actionId: string): Promise<void> {
+  if (!actionId) {
+    return
+  }
+
+  await getVRMA(actionId)
+}
+
+/**
+ * Warm the VRMA cache in background.
+ * Keeps concurrency low to avoid blocking render/main thread work.
+ */
+export async function warmupAnimationCache(actionIds: string[], maxConcurrent: number = 2): Promise<void> {
+  const queue = Array.from(new Set(actionIds.filter(Boolean)))
+  if (queue.length === 0) {
+    return
+  }
+
+  let index = 0
+  const workers = Array.from({ length: Math.min(maxConcurrent, queue.length) }, async () => {
+    while (index < queue.length) {
+      const actionId = queue[index++]
+      try {
+        await getVRMA(actionId)
+      } catch (error) {
+        console.warn(`[animation] warmup failed for ${actionId}:`, error)
+      }
+    }
+  })
+
+  await Promise.all(workers)
+}
+
+async function getOrCreateClip(actionId: string): Promise<AnimationClip | null> {
+  const { vrm } = state
+  if (!vrm) {
+    return null
+  }
+
+  ensureRuntimeCachesForCurrentModel()
+
+  const cachedClip = clipCache.get(actionId)
+  if (cachedClip) {
+    return cachedClip
+  }
 
   const vrma = await getVRMA(actionId)
   const clip = createVRMAnimationClip(vrma, vrm)
-  const newAction = mixer.clipAction(clip)
+  clipCache.set(actionId, clip)
+  return clip
+}
+
+function getOrCreateAction(actionId: string, clip: AnimationClip): AnimationAction | null {
+  const { mixer } = state
+  if (!mixer) {
+    return null
+  }
+
+  ensureRuntimeCachesForCurrentModel()
+
+  const cachedAction = actionCache.get(actionId)
+  if (cachedAction) {
+    return cachedAction
+  }
+
+  const action = mixer.clipAction(clip)
+  actionCache.set(actionId, action)
+  return action
+}
+
+function stopActionAfterFade(action: AnimationAction, fadeDuration: number): void {
+  const delayMs = Math.max(120, Math.round((fadeDuration + 0.08) * 1000))
+
+  window.setTimeout(() => {
+    if (currentAction !== action) {
+      action.stop()
+    }
+  }, delayMs)
+}
+
+export async function loadAndPlayAction(actionId: string, loop: boolean = false, onFinished?: () => void, category?: string): Promise<AnimationAction | null> {
+  const { mixer } = state
+  if (!mixer) return null
+
+  const clip = await getOrCreateClip(actionId)
+  if (!clip) return null
+
+  const newAction = getOrCreateAction(actionId, clip)
+  if (!newAction) return null
 
   const targetCategory = category || 'action'
-  const fadeDuration = getCrossfadeDuration(clip)
-  currentCategory = targetCategory
+  const fadeDuration = getCrossfadeDuration(clip, targetCategory)
+  const previousAction = currentAction
 
+  newAction.enabled = true
   newAction.reset()
-  if (currentAction && currentAction !== newAction) {
-    currentAction.crossFadeTo(newAction, fadeDuration, true)
+  newAction.setEffectiveWeight(1)
+  newAction.setEffectiveTimeScale(1)
+
+  if (previousAction && previousAction !== newAction) {
+    const isActionToIdleTransition = targetCategory === 'idle' && currentCategory !== 'idle'
+
+    if (isActionToIdleTransition) {
+      previousAction.fadeOut(fadeDuration)
+      newAction.fadeIn(fadeDuration)
+    } else {
+      previousAction.crossFadeTo(newAction, fadeDuration, false)
+    }
+
+    stopActionAfterFade(previousAction, fadeDuration)
   } else {
     newAction.fadeIn(fadeDuration)
   }
+
   if (!loop) {
     newAction.setLoop(LoopOnce, 1)
     newAction.clampWhenFinished = true
   } else {
     newAction.setLoop(LoopRepeat, Infinity)
+    newAction.clampWhenFinished = false
   }
-  newAction.play()
 
-  if (onFinished && !loop) {
+  newAction.play()
+  currentAction = newAction
+  currentCategory = targetCategory
+
+  if (!loop) {
     const handler = (e: any) => {
-      if (e.action === newAction) {
-        mixer.removeEventListener('finished', handler)
-        onFinished()
-      }
+      if (e.action !== newAction) return
+      mixer.removeEventListener('finished', handler)
+      onFinished?.()
     }
+
     mixer.addEventListener('finished', handler)
   }
 
-  currentAction = newAction
   return newAction
 }
 
 export async function playBaseIdle(actionId: string = '119_Idle') {
   const action = await loadAndPlayAction(actionId, true, undefined, 'idle')
   if (action) baseIdleAction = action
+
+  // Reveal model now that idle is playing (avoids T-pose flash)
+  const { vrm } = state
+  if (vrm && !vrm.scene.visible) {
+    vrm.scene.visible = true
+  }
 }
 
 export function getCurrentAction(): AnimationAction | null {
@@ -133,6 +283,14 @@ export async function loadAndPlay(url: string) {
 export function stopAnimation() {
   if (currentAction) {
     currentAction.fadeOut(0.5)
+    const actionToStop = currentAction
     currentAction = null
+    currentCategory = 'idle'
+
+    window.setTimeout(() => {
+      if (currentAction !== actionToStop) {
+        actionToStop.stop()
+      }
+    }, 600)
   }
 }

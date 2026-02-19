@@ -47,7 +47,7 @@ export function isActive(): boolean {
 export async function listAvailableScenes(): Promise<string[]> {
   if (availableScenes.length > 0) return availableScenes
   try {
-    const resp = await fetch('/scenes/index.json')
+    const resp = await fetch('./scenes/index.json')
     if (resp.ok) {
       availableScenes = await resp.json()
     }
