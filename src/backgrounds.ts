@@ -210,8 +210,8 @@ function updateInstancedLeaves(elapsed: number, delta: number) {
   for (let i = 0; i < d.count; i++) {
     const i3 = i * 3
     d.positions[i3 + 1] -= d.velocities[i] * delta
-    d.positions[i3] += Math.sin(elapsed * 0.6 + d.phases[i]) * 0.004
-    d.positions[i3 + 2] += Math.cos(elapsed * 0.4 + d.phases[i]) * 0.002
+    d.positions[i3] += Math.sin(elapsed * 0.6 + d.phases[i]) * 0.008
+    d.positions[i3 + 2] += Math.cos(elapsed * 0.4 + d.phases[i]) * 0.004
     d.rotations[i3] += d.rotSpeeds[i3] * delta
     d.rotations[i3 + 1] += d.rotSpeeds[i3 + 1] * delta
     d.rotations[i3 + 2] += d.rotSpeeds[i3 + 2] * delta
@@ -348,34 +348,58 @@ function randomInBounds(): [number, number, number] {
 }
 
 function createPetalGeometry(): THREE.BufferGeometry {
-  // Rounded petal shape via custom vertices
   const shape = new THREE.Shape()
   shape.moveTo(0, -0.5)
   shape.bezierCurveTo(0.3, -0.2, 0.4, 0.2, 0, 0.5)
   shape.bezierCurveTo(-0.4, 0.2, -0.3, -0.2, 0, -0.5)
-  const geo = new THREE.ShapeGeometry(shape, 4)
+  const geo = new THREE.ShapeGeometry(shape, 6)  // more segments for curvature
+
+  // Add Z curvature — cup the petal like a real flower petal
+  const pos = geo.getAttribute('position')
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    const y = pos.getY(i)
+    const distFromCenter = Math.sqrt(x * x + y * y)
+    pos.setZ(i, distFromCenter * 0.15)  // curve outward from center
+  }
+  pos.needsUpdate = true
+  geo.computeVertexNormals()  // CRITICAL — normals needed for lighting
   return geo
 }
 
 function createLeafGeometry(): THREE.BufferGeometry {
-  // Elongated leaf shape
   const shape = new THREE.Shape()
   shape.moveTo(0, -0.6)
   shape.bezierCurveTo(0.25, -0.3, 0.3, 0.1, 0.15, 0.4)
   shape.bezierCurveTo(0.05, 0.55, -0.05, 0.55, -0.15, 0.4)
   shape.bezierCurveTo(-0.3, 0.1, -0.25, -0.3, 0, -0.6)
-  const geo = new THREE.ShapeGeometry(shape, 4)
+  const geo = new THREE.ShapeGeometry(shape, 6)
+
+  // Add Z curvature — cup the leaf
+  const pos = geo.getAttribute('position')
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    const y = pos.getY(i)
+    const distFromCenter = Math.sqrt(x * x + y * y)
+    pos.setZ(i, distFromCenter * 0.15)
+  }
+  pos.needsUpdate = true
+  geo.computeVertexNormals()
   return geo
 }
 
 function createInstancedPetals(count: number): THREE.InstancedMesh {
   const geo = createPetalGeometry()
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0xffbddb,
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: 0xffb0cc,
     transparent: true,
-    opacity: 0.7,
+    opacity: 0.85,
     side: THREE.DoubleSide,
     depthWrite: false,
+    roughness: 0.4,
+    metalness: 0.05,
+    clearcoat: 0.3,
+    clearcoatRoughness: 0.4,
   })
   const mesh = new THREE.InstancedMesh(geo, mat, count)
   mesh.name = 'bg-petals'
@@ -400,7 +424,7 @@ function createInstancedPetals(count: number): THREE.InstancedMesh {
     rotSpeeds[i3] = (Math.random() - 0.5) * 1.5
     rotSpeeds[i3 + 1] = (Math.random() - 0.5) * 1.2
     rotSpeeds[i3 + 2] = (Math.random() - 0.5) * 0.8
-    scales[i] = 0.03 + Math.random() * 0.05 // 0.03-0.08
+    scales[i] = 0.05 + Math.random() * 0.07 // 0.05-0.12
 
     _dummy.position.set(x, y, z)
     _dummy.rotation.set(rotations[i3], rotations[i3 + 1], rotations[i3 + 2])
@@ -416,16 +440,22 @@ function createInstancedPetals(count: number): THREE.InstancedMesh {
 
 function createInstancedLeaves(count: number): THREE.InstancedMesh {
   const geo = createLeafGeometry()
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0x8ab848,
+  const leafColors = [0x6b8e4e, 0xc4a035]
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: 0x6b8e4e,
     transparent: true,
-    opacity: 0.65,
+    opacity: 0.85,
     side: THREE.DoubleSide,
     depthWrite: false,
+    roughness: 0.5,
+    metalness: 0.02,
+    clearcoat: 0.2,
+    clearcoatRoughness: 0.5,
   })
   const mesh = new THREE.InstancedMesh(geo, mat, count)
   mesh.name = 'bg-leaves'
   mesh.frustumCulled = false
+  mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3)
 
   const positions = new Float32Array(count * 3)
   const velocities = new Float32Array(count)
@@ -433,6 +463,7 @@ function createInstancedLeaves(count: number): THREE.InstancedMesh {
   const rotations = new Float32Array(count * 3)
   const rotSpeeds = new Float32Array(count * 3)
   const scales = new Float32Array(count)
+  const _leafColor = new THREE.Color()
 
   for (let i = 0; i < count; i++) {
     const [x, y, z] = randomInBounds()
@@ -443,10 +474,14 @@ function createInstancedLeaves(count: number): THREE.InstancedMesh {
     rotations[i3] = Math.random() * Math.PI * 2
     rotations[i3 + 1] = Math.random() * Math.PI * 2
     rotations[i3 + 2] = Math.random() * Math.PI * 2
-    rotSpeeds[i3] = (Math.random() - 0.5) * 1.2
-    rotSpeeds[i3 + 1] = (Math.random() - 0.5) * 1.0
-    rotSpeeds[i3 + 2] = (Math.random() - 0.5) * 0.6
-    scales[i] = 0.04 + Math.random() * 0.06 // 0.04-0.1
+    rotSpeeds[i3] = (Math.random() - 0.5) * 1.8
+    rotSpeeds[i3 + 1] = (Math.random() - 0.5) * 1.4
+    rotSpeeds[i3 + 2] = (Math.random() - 0.5) * 1.0
+    scales[i] = 0.06 + Math.random() * 0.08 // 0.06-0.14
+
+    // Random green or golden color
+    _leafColor.setHex(leafColors[Math.random() < 0.6 ? 0 : 1])
+    mesh.setColorAt(i, _leafColor)
 
     _dummy.position.set(x, y, z)
     _dummy.rotation.set(rotations[i3], rotations[i3 + 1], rotations[i3 + 2])
@@ -469,7 +504,7 @@ function createSunsetDust(count: number): THREE.Points {
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-sunset-dust', positions, { color: 0xffc860, size: 0.06, opacity: 0.55 })
+  return makePoints('bg-sunset-dust', positions, { color: 0xffc860, size: 0.08, opacity: 0.55 })
 }
 
 function createBubbles(count: number): THREE.Points {
@@ -482,7 +517,7 @@ function createBubbles(count: number): THREE.Points {
     particleVelocities[i] = 0.06 + Math.random() * 0.12
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-bubbles', positions, { color: 0xc8e8ff, size: 0.1, opacity: 0.55 })
+  return makePoints('bg-bubbles', positions, { color: 0xc8e8ff, size: 0.14, opacity: 0.55, texture: getBubbleTexture() })
 }
 
 function createStars(count: number): THREE.Points {
@@ -498,7 +533,7 @@ function createStars(count: number): THREE.Points {
   }
   particleVelocities = null
   particlePhases = null
-  return makePoints('bg-stars', positions, { color: 0xe6edff, size: 0.05, opacity: 0.7, additive: false })
+  return makePoints('bg-stars', positions, { color: 0xe6edff, size: 0.07, opacity: 0.7, additive: false })
 }
 
 function createShootingStars(count: number): THREE.Points {
@@ -525,7 +560,7 @@ function createSnowflakes(count: number): THREE.Points {
     particleVelocities[i] = 0.04 + Math.random() * 0.08
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-snowflakes', positions, { color: 0xe8d8f8, size: 0.05, opacity: 0.55 })
+  return makePoints('bg-snowflakes', positions, { color: 0xe8d8f8, size: 0.07, opacity: 0.6, texture: getSnowflakeTexture() })
 }
 
 function createCafeDust(count: number): THREE.Points {
@@ -537,7 +572,7 @@ function createCafeDust(count: number): THREE.Points {
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-cafe-dust', positions, { color: 0xffd8b8, size: 0.05, opacity: 0.45 })
+  return makePoints('bg-cafe-dust', positions, { color: 0xffd8b8, size: 0.07, opacity: 0.45 })
 }
 
 function createMinimalDust(count: number): THREE.Points {
@@ -549,14 +584,14 @@ function createMinimalDust(count: number): THREE.Points {
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-minimal-dust', positions, { color: 0xe0ddd8, size: 0.035, opacity: 0.25 })
+  return makePoints('bg-minimal-dust', positions, { color: 0xe0ddd8, size: 0.05, opacity: 0.25 })
 }
 
 // Cached soft circle texture for all point particles
 let _softCircleTexture: THREE.Texture | null = null
 function getSoftCircleTexture(): THREE.Texture {
   if (_softCircleTexture) return _softCircleTexture
-  const size = 64
+  const size = 128
   const canvas = document.createElement('canvas')
   canvas.width = size; canvas.height = size
   const ctx = canvas.getContext('2d')!
@@ -572,17 +607,93 @@ function getSoftCircleTexture(): THREE.Texture {
   return _softCircleTexture
 }
 
+// Snowflake texture — 6-pointed star with soft edges
+let _snowflakeTexture: THREE.Texture | null = null
+function getSnowflakeTexture(): THREE.Texture {
+  if (_snowflakeTexture) return _snowflakeTexture
+  const size = 128
+  const canvas = document.createElement('canvas')
+  canvas.width = size; canvas.height = size
+  const ctx = canvas.getContext('2d')!
+  const half = size / 2
+  ctx.clearRect(0, 0, size, size)
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+  ctx.lineWidth = 3
+  ctx.lineCap = 'round'
+  ctx.shadowColor = 'rgba(255,255,255,0.6)'
+  ctx.shadowBlur = 6
+  // Draw 3 crossed lines (6 arms)
+  for (let a = 0; a < 3; a++) {
+    const angle = (a * Math.PI) / 3
+    const dx = Math.cos(angle) * half * 0.75
+    const dy = Math.sin(angle) * half * 0.75
+    ctx.beginPath()
+    ctx.moveTo(half - dx, half - dy)
+    ctx.lineTo(half + dx, half + dy)
+    ctx.stroke()
+    // Small branches on each arm
+    for (const sign of [-1, 1]) {
+      const bx = Math.cos(angle) * half * 0.4
+      const by = Math.sin(angle) * half * 0.4
+      const branchAngle = angle + sign * Math.PI / 4
+      const bl = half * 0.25
+      ctx.beginPath()
+      ctx.moveTo(half + bx, half + by)
+      ctx.lineTo(half + bx + Math.cos(branchAngle) * bl, half + by + Math.sin(branchAngle) * bl)
+      ctx.stroke()
+    }
+  }
+  // Soft radial fade
+  const fadeGrad = ctx.createRadialGradient(half, half, half * 0.5, half, half, half)
+  fadeGrad.addColorStop(0, 'rgba(0,0,0,0)')
+  fadeGrad.addColorStop(1, 'rgba(0,0,0,1)')
+  ctx.globalCompositeOperation = 'destination-out'
+  ctx.fillStyle = fadeGrad
+  ctx.fillRect(0, 0, size, size)
+  ctx.globalCompositeOperation = 'source-over'
+  _snowflakeTexture = new THREE.CanvasTexture(canvas)
+  return _snowflakeTexture
+}
+
+// Bubble texture — ring highlight with semi-transparent center
+let _bubbleTexture: THREE.Texture | null = null
+function getBubbleTexture(): THREE.Texture {
+  if (_bubbleTexture) return _bubbleTexture
+  const size = 128
+  const canvas = document.createElement('canvas')
+  canvas.width = size; canvas.height = size
+  const ctx = canvas.getContext('2d')!
+  const half = size / 2
+  // Semi-transparent fill
+  const fillGrad = ctx.createRadialGradient(half, half, 0, half, half, half)
+  fillGrad.addColorStop(0, 'rgba(255,255,255,0.1)')
+  fillGrad.addColorStop(0.7, 'rgba(255,255,255,0.15)')
+  fillGrad.addColorStop(0.85, 'rgba(255,255,255,0.7)')
+  fillGrad.addColorStop(0.95, 'rgba(255,255,255,0.9)')
+  fillGrad.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = fillGrad
+  ctx.fillRect(0, 0, size, size)
+  // Specular highlight
+  const hlGrad = ctx.createRadialGradient(half * 0.7, half * 0.65, 0, half * 0.7, half * 0.65, half * 0.25)
+  hlGrad.addColorStop(0, 'rgba(255,255,255,0.8)')
+  hlGrad.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = hlGrad
+  ctx.fillRect(0, 0, size, size)
+  _bubbleTexture = new THREE.CanvasTexture(canvas)
+  return _bubbleTexture
+}
+
 function makePoints(
   name: string,
   positions: Float32Array,
-  opts: { color: number; size: number; opacity: number; additive?: boolean },
+  opts: { color: number; size: number; opacity: number; additive?: boolean; texture?: THREE.Texture },
 ): THREE.Points {
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   const material = new THREE.PointsMaterial({
     color: opts.color,
     size: opts.size,
-    map: getSoftCircleTexture(),
+    map: opts.texture ?? getSoftCircleTexture(),
     transparent: true,
     opacity: opts.opacity,
     depthWrite: false,
@@ -607,9 +718,8 @@ function applyBackgroundScene(name: BackgroundPreset) {
   clearTexture()
   applyLighting(name)
 
-  if (isTransparentMode()) return
-
-  const skipSceneBg = isGradientBackgroundActive()
+  const transparent = isTransparentMode()
+  const skipSceneBg = isGradientBackgroundActive() || transparent
   if (skipSceneBg) {
     scene.background = null
   }

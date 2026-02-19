@@ -9,13 +9,13 @@ type ThemeConfig = {
 }
 
 const GRADIENT_COLORS: Record<string, ThemeConfig> = {
-  sakura: { id: 0, top: [0.98, 0.82, 0.86], mid: [0.96, 0.72, 0.78], bottom: [0.92, 0.62, 0.72], speed: 0.35 },
-  sunset: { id: 1, top: [1.0, 0.84, 0.62], mid: [0.99, 0.70, 0.46], bottom: [0.92, 0.52, 0.42], speed: 0.4 },
-  ocean: { id: 2, top: [0.72, 0.87, 0.96], mid: [0.52, 0.74, 0.90], bottom: [0.38, 0.58, 0.77], speed: 0.3 },
-  night: { id: 3, top: [0.21, 0.18, 0.34], mid: [0.14, 0.12, 0.24], bottom: [0.09, 0.08, 0.16], speed: 0.2 },
-  forest: { id: 4, top: [0.84, 0.92, 0.76], mid: [0.62, 0.78, 0.56], bottom: [0.42, 0.60, 0.40], speed: 0.3 },
-  lavender: { id: 5, top: [0.93, 0.86, 0.99], mid: [0.82, 0.72, 0.94], bottom: [0.67, 0.56, 0.82], speed: 0.35 },
-  minimal: { id: 6, top: [0.98, 0.97, 0.95], mid: [0.96, 0.94, 0.93], bottom: [0.93, 0.92, 0.91], speed: 0.12 },
+  sakura: { id: 0, top: [0.98, 0.82, 0.86], mid: [0.96, 0.72, 0.78], bottom: [0.92, 0.62, 0.72], speed: 0.0875 },
+  sunset: { id: 1, top: [1.0, 0.84, 0.62], mid: [0.99, 0.70, 0.46], bottom: [0.92, 0.52, 0.42], speed: 0.1 },
+  ocean: { id: 2, top: [0.72, 0.87, 0.96], mid: [0.52, 0.74, 0.90], bottom: [0.38, 0.58, 0.77], speed: 0.075 },
+  night: { id: 3, top: [0.21, 0.18, 0.34], mid: [0.14, 0.12, 0.24], bottom: [0.09, 0.08, 0.16], speed: 0.05 },
+  forest: { id: 4, top: [0.84, 0.92, 0.76], mid: [0.62, 0.78, 0.56], bottom: [0.42, 0.60, 0.40], speed: 0.075 },
+  lavender: { id: 5, top: [0.93, 0.86, 0.99], mid: [0.82, 0.72, 0.94], bottom: [0.67, 0.56, 0.82], speed: 0.0875 },
+  minimal: { id: 6, top: [0.98, 0.97, 0.95], mid: [0.96, 0.94, 0.93], bottom: [0.93, 0.92, 0.91], speed: 0.03 },
 }
 
 const DEFAULT_THEME = 'sakura'
@@ -166,7 +166,7 @@ vec3 renderTheme(float themeId, vec2 uv, float t, vec3 top, vec3 mid, vec3 botto
 
   float flow = fbm(uv * vec2(2.3, 1.9), t * 0.35);
   float flow2 = fbm(uv * vec2(1.5, 2.8) + vec2(3.1, -1.7), t * 0.28);
-  float gy = clamp(uv.y + flow * 0.08 + flow2 * 0.04, 0.0, 1.0);
+  float gy = clamp(uv.y + flow * 0.03 + flow2 * 0.015, 0.0, 1.0);
   vec3 base = mix(bottom, mid, smoothstep(0.0, 0.55, gy));
   base = mix(base, top, smoothstep(0.45, 1.0, gy));
 
