@@ -313,7 +313,7 @@ export function updateContactShadow() {
   contactShadowPlane.visible = false
   const hidden: THREE.Object3D[] = []
   scene.traverse((obj) => {
-    if ((obj.name === 'gradient-background' || obj.name === 'background-bokeh' || obj.name === 'contact-shadow') && obj.visible) {
+    if ((obj.name === 'gradient-background' || obj.name === 'background-bokeh' || obj.name === 'contact-shadow' || obj.name.startsWith('bg-')) && obj.visible) {
       obj.visible = false
       hidden.push(obj)
     }
