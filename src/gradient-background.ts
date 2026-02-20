@@ -13,9 +13,9 @@ const GRADIENT_COLORS: Record<string, ThemeConfig> = {
   sunset: { id: 1, top: [1.0, 0.72, 0.48], mid: [0.94, 0.52, 0.38], bottom: [0.82, 0.38, 0.35], speed: 0.1 },
   ocean: { id: 2, top: [0.72, 0.87, 0.96], mid: [0.52, 0.74, 0.90], bottom: [0.38, 0.58, 0.77], speed: 0.075 },
   night: { id: 3, top: [0.21, 0.18, 0.34], mid: [0.14, 0.12, 0.24], bottom: [0.09, 0.08, 0.16], speed: 0.05 },
-  forest: { id: 4, top: [0.84, 0.92, 0.76], mid: [0.62, 0.78, 0.56], bottom: [0.42, 0.60, 0.40], speed: 0.075 },
+  forest: { id: 4, top: [0.88, 0.95, 0.82], mid: [0.72, 0.85, 0.65], bottom: [0.55, 0.72, 0.52], speed: 0.075 },
   lavender: { id: 5, top: [0.93, 0.86, 0.99], mid: [0.82, 0.72, 0.94], bottom: [0.67, 0.56, 0.82], speed: 0.09 },
-  minimal: { id: 6, top: [0.94, 0.93, 0.91], mid: [0.91, 0.90, 0.88], bottom: [0.88, 0.87, 0.85], speed: 0.03 },
+  minimal: { id: 6, top: [0.88, 0.87, 0.85], mid: [0.84, 0.83, 0.81], bottom: [0.80, 0.79, 0.77], speed: 0.03 },
 }
 
 const DEFAULT_THEME = 'sakura'

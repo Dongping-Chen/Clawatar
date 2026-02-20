@@ -184,8 +184,8 @@ function updateInstancedPetals(elapsed: number, delta: number) {
     // Fall
     d.positions[i3 + 1] -= d.velocities[i] * delta
     // Sway — wider, slower drift
-    d.positions[i3] += Math.sin(elapsed * 0.5 + d.phases[i]) * 0.004
-    d.positions[i3 + 2] += Math.cos(elapsed * 0.35 + d.phases[i]) * 0.003
+    d.positions[i3] += Math.sin(elapsed * 0.3 + d.phases[i]) * 0.004
+    d.positions[i3 + 2] += Math.cos(elapsed * 0.2 + d.phases[i]) * 0.003
     // Tumble rotation
     d.rotations[i3] += d.rotSpeeds[i3] * delta
     d.rotations[i3 + 1] += d.rotSpeeds[i3 + 1] * delta
@@ -395,7 +395,7 @@ function createInstancedPetals(count: number): THREE.InstancedMesh {
   const mat = new THREE.MeshPhysicalMaterial({
     color: 0xff85a8,
     emissive: 0xff85a8,
-    emissiveIntensity: 0.1,
+    emissiveIntensity: 0.2,
     transparent: true,
     opacity: 0.95,
     side: THREE.DoubleSide,
@@ -426,7 +426,7 @@ function createInstancedPetals(count: number): THREE.InstancedMesh {
     const [x, y, z] = randomInBounds()
     const i3 = i * 3
     positions[i3] = x; positions[i3 + 1] = y; positions[i3 + 2] = z
-    velocities[i] = 0.015 + Math.random() * 0.03
+    velocities[i] = 0.008 + Math.random() * 0.015
     phases[i] = Math.random() * Math.PI * 2
     rotations[i3] = Math.random() * Math.PI * 2
     rotations[i3 + 1] = Math.random() * Math.PI * 2
@@ -459,7 +459,7 @@ function createInstancedLeaves(count: number): THREE.InstancedMesh {
   const mat = new THREE.MeshPhysicalMaterial({
     color: 0x6b8e4e,
     emissive: 0x6b8e4e,
-    emissiveIntensity: 0.08,
+    emissiveIntensity: 0.15,
     transparent: true,
     opacity: 0.9,
     side: THREE.DoubleSide,
@@ -521,7 +521,7 @@ function createSunsetDust(count: number): THREE.Points {
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-sunset-dust', positions, { color: 0xffd4a0, size: 0.08, opacity: 0.4 })
+  return makePoints('bg-sunset-dust', positions, { color: 0xffd4a0, size: 0.08, opacity: 0.5 })
 }
 
 function createBubbles(count: number): THREE.Points {
@@ -589,7 +589,7 @@ function createCafeDust(count: number): THREE.Points {
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-cafe-dust', positions, { color: 0xffd8b8, size: 0.07, opacity: 0.45 })
+  return makePoints('bg-cafe-dust', positions, { color: 0xffd8b8, size: 0.07, opacity: 0.5 })
 }
 
 function createMinimalDust(count: number): THREE.Points {
@@ -601,7 +601,7 @@ function createMinimalDust(count: number): THREE.Points {
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-minimal-dust', positions, { color: 0xffffff, size: 0.04, opacity: 0.3 })
+  return makePoints('bg-minimal-dust', positions, { color: 0xffffff, size: 0.04, opacity: 0.35 })
 }
 
 // Cached soft circle texture for all point particles
