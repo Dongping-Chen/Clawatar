@@ -16,10 +16,11 @@ let baseIdleAction: AnimationAction | null = null
 export let currentCategory: string = 'idle'
 
 /** Scale factor for crossfade duration. Higher = slower transitions. Adjust via WS or console. */
-export let crossfadeScale = 2.0
-const CROSSFADE_MIN = 0.1
-const CROSSFADE_MAX = 2.0
+export let crossfadeScale = 1.2
+const CROSSFADE_MIN = 0.3
+const CROSSFADE_MAX = 1.0
 const ACTION_TO_IDLE_MIN_FADE = 0.45
+const IDLE_TO_IDLE_FADE = 0.5
 
 export function setCrossfadeScale(s: number) {
   crossfadeScale = Math.max(0.1, s)
@@ -67,17 +68,57 @@ function computePoseDistance(targetClip: AnimationClip): number {
   return count > 0 ? (totalAngle / count) / Math.PI : 0.5
 }
 
+function trimClip(clip: AnimationClip, trimStartSec = 0.33, trimEndSec = 0.33): AnimationClip {
+  const newDuration = clip.duration - trimStartSec - trimEndSec
+  if (newDuration <= 0.5) return clip
+
+  for (const track of clip.tracks) {
+    const times = track.times
+    const values = track.values
+    const valueSize = values.length / times.length
+
+    let startIdx = 0
+    while (startIdx < times.length && times[startIdx] < trimStartSec) startIdx++
+
+    let endIdx = times.length - 1
+    const endTime = clip.duration - trimEndSec
+    while (endIdx > startIdx && times[endIdx] > endTime) endIdx--
+
+    if (endIdx < startIdx) continue
+
+    const newTimes = new Float32Array(endIdx - startIdx + 1)
+    const newValues = new Float32Array((endIdx - startIdx + 1) * valueSize)
+
+    for (let i = startIdx; i <= endIdx; i++) {
+      newTimes[i - startIdx] = Math.max(0, times[i] - trimStartSec)
+      for (let v = 0; v < valueSize; v++) {
+        newValues[(i - startIdx) * valueSize + v] = values[i * valueSize + v]
+      }
+    }
+
+    track.times = newTimes
+    track.values = newValues
+  }
+
+  clip.duration = newDuration
+  return clip
+}
+
 /** Crossfade duration based on actual pose difference × scale. */
 function getCrossfadeDuration(targetClip: AnimationClip, targetCategory: string): number {
+  if (targetCategory === 'idle' && currentCategory === 'idle') {
+    return IDLE_TO_IDLE_FADE
+  }
+
   const distance = computePoseDistance(targetClip)
-  let duration = CROSSFADE_MIN + distance * crossfadeScale
+  let duration = CROSSFADE_MIN + distance * crossfadeScale * 0.45
 
   // Action -> idle needs a gentler transition to avoid torso twist/lean artifacts.
   if (targetCategory === 'idle' && currentCategory !== 'idle') {
     duration = Math.max(duration, ACTION_TO_IDLE_MIN_FADE)
   }
 
-  return Math.min(duration, CROSSFADE_MAX)
+  return Math.min(Math.max(duration, CROSSFADE_MIN), CROSSFADE_MAX)
 }
 
 async function getVRMA(actionId: string): Promise<VRMAnimation> {
@@ -154,7 +195,7 @@ async function getOrCreateClip(actionId: string): Promise<AnimationClip | null> 
   }
 
   const vrma = await getVRMA(actionId)
-  const clip = createVRMAnimationClip(vrma, vrm)
+  const clip = trimClip(createVRMAnimationClip(vrma, vrm))
   clipCache.set(actionId, clip)
   return clip
 }

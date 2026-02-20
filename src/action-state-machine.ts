@@ -150,9 +150,11 @@ function getSyncSeed(): number {
   return Math.floor(Date.now() / 10000)
 }
 
+let idlePickCounter = 0
+
 function pickIdleActionWithCategory(): { action: string; category: keyof typeof IDLE_CATEGORIES } {
-  // Use time-synced seed so all devices pick the same animation
-  const rng = seededRandom(getSyncSeed())
+  // Keep sync by time window while varying repeated picks within the same window.
+  const rng = seededRandom(getSyncSeed() + idlePickCounter++)
   const weights = getTimeAdjustedWeights()
   const roll = rng()
   let cumulative = 0
@@ -226,11 +228,8 @@ export function updateStateMachine(elapsed: number) {
 
   lastIdleAttempt = elapsed
 
-  // Use synced RNG for chance check too (so all devices agree on skip/act)
-  const syncRng = seededRandom(getSyncSeed())
-  // Consume first two values (used by pickIdleActionWithCategory), use 3rd for chance
-  syncRng(); syncRng()
-  const chanceRoll = syncRng()
+  // Use synced RNG for chance check too, and vary repeated checks within same seed window.
+  const chanceRoll = seededRandom(getSyncSeed() + idlePickCounter++)()
 
   // Meeting mode: less frequent, subtle animations only
   if (meetingMode) {
