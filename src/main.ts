@@ -182,40 +182,9 @@ function initMusicToggleButton() {
 function init() {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement
   initScene(canvas)
-  initContactShadow()
+  initContactShadow(isTransparent)
   if (!isTransparent) {
     initGradientBackground(scene, initialTheme)
-  }
-
-  // Add blob shadow in bgonly mode — renders under character in the background WebView
-  // (Shadow meshes don't render in transparent WKWebView, so we draw them in bgonly layer)
-  if (isBgOnly) {
-    const shadowCanvas = document.createElement('canvas')
-    shadowCanvas.width = 256
-    shadowCanvas.height = 256
-    const ctx = shadowCanvas.getContext('2d')!
-    const grad = ctx.createRadialGradient(128, 128, 0, 128, 128, 128)
-    grad.addColorStop(0, 'rgba(0,0,0,0.45)')
-    grad.addColorStop(0.3, 'rgba(0,0,0,0.25)')
-    grad.addColorStop(0.7, 'rgba(0,0,0,0.08)')
-    grad.addColorStop(1, 'rgba(0,0,0,0)')
-    ctx.fillStyle = grad
-    ctx.fillRect(0, 0, 256, 256)
-    const shadowTex = new THREE.CanvasTexture(shadowCanvas)
-
-    const shadowGeo = new THREE.PlaneGeometry(1.0, 0.5)
-    const shadowMat = new THREE.MeshBasicMaterial({
-      map: shadowTex,
-      transparent: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      toneMapped: false,  // Prevent AgX from altering shadow color
-    })
-    const shadowMesh = new THREE.Mesh(shadowGeo, shadowMat)
-    shadowMesh.rotation.x = -Math.PI / 2
-    shadowMesh.position.set(0, 0.01, 0.1)  // slightly forward toward camera
-    shadowMesh.name = 'character-shadow-blob'
-    scene.add(shadowMesh)
   }
   initLookAt(canvas)
 
@@ -565,7 +534,7 @@ function animate() {
 
   // Single-pass rendering: scene GLB emissive is pre-dimmed in loadRoomGLB.
   // Use composer (with bloom) for ALL modes — character gets glow effect.
-  updateContactShadow()
+  updateContactShadow(state.vrm?.scene ?? null)
 
   if (composer) {
     composer.render()

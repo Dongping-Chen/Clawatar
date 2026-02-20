@@ -37,44 +37,53 @@ type ThemeGradient = {
   bottom: ThemeRGB
 }
 
-let shadowLight: THREE.DirectionalLight | null = null
-let shadowGround: THREE.Mesh | null = null
+let contactShadowBlob: THREE.Mesh | null = null
 
-function ensureRealShadowSystem() {
-  if (shadowLight && shadowGround) return
+function createBlobShadowTexture(): THREE.CanvasTexture {
+  const shadowCanvas = document.createElement('canvas')
+  shadowCanvas.width = 256
+  shadowCanvas.height = 256
 
-  shadowLight = new THREE.DirectionalLight(0xffffff, 0.3)
-  shadowLight.name = 'shadow-light'
-  shadowLight.position.set(0, 4, 1)
-  shadowLight.target.position.set(0, 0, 0)
-  shadowLight.castShadow = true
-  shadowLight.shadow.mapSize.width = 1024
-  shadowLight.shadow.mapSize.height = 1024
-  shadowLight.shadow.camera.near = 0.1
-  shadowLight.shadow.camera.far = 10
-  shadowLight.shadow.camera.left = -1.5
-  shadowLight.shadow.camera.right = 1.5
-  shadowLight.shadow.camera.top = 2
-  shadowLight.shadow.camera.bottom = -0.5
-  shadowLight.shadow.bias = -0.001
-  shadowLight.shadow.radius = 4
+  const ctx = shadowCanvas.getContext('2d')
+  if (!ctx) {
+    throw new Error('Failed to create blob shadow 2D context')
+  }
 
-  scene.add(shadowLight)
-  scene.add(shadowLight.target)
+  const grad = ctx.createRadialGradient(128, 128, 0, 128, 128, 128)
+  grad.addColorStop(0.0, 'rgba(0,0,0,0.35)')
+  grad.addColorStop(0.35, 'rgba(0,0,0,0.20)')
+  grad.addColorStop(0.75, 'rgba(0,0,0,0.07)')
+  grad.addColorStop(1.0, 'rgba(0,0,0,0)')
 
-  const groundGeo = new THREE.PlaneGeometry(10, 10)
-  const groundMat = new THREE.ShadowMaterial({
-    opacity: 0.3,
-    color: 0x000000,
+  ctx.clearRect(0, 0, 256, 256)
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, 256, 256)
+
+  const texture = new THREE.CanvasTexture(shadowCanvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.needsUpdate = true
+  return texture
+}
+
+function ensureBlobShadow() {
+  if (contactShadowBlob) return
+
+  const shadowGeo = new THREE.PlaneGeometry(0.8, 0.4)
+  const shadowMat = new THREE.MeshBasicMaterial({
+    map: createBlobShadowTexture(),
+    transparent: true,
+    depthWrite: false,
+    toneMapped: false,
+    side: THREE.DoubleSide,
   })
 
-  shadowGround = new THREE.Mesh(groundGeo, groundMat)
-  shadowGround.rotation.x = -Math.PI / 2
-  shadowGround.position.y = 0
-  shadowGround.receiveShadow = true
-  shadowGround.castShadow = false
-  shadowGround.name = 'shadow-ground'
-  scene.add(shadowGround)
+  contactShadowBlob = new THREE.Mesh(shadowGeo, shadowMat)
+  contactShadowBlob.name = 'contact-shadow-blob'
+  contactShadowBlob.rotation.x = -Math.PI / 2
+  contactShadowBlob.position.set(0, 0.005, 0)
+  contactShadowBlob.visible = false
+  contactShadowBlob.renderOrder = 1
+  scene.add(contactShadowBlob)
 }
 
 const BACKGROUND_THEMES: Record<BackgroundThemeKey, ThemeGradient> = {
@@ -211,7 +220,7 @@ export function initScene(canvas: HTMLCanvasElement) {
   camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.01, 100)
   camera.position.set(0, 1.2, 3.0)
 
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, premultipliedAlpha: false })
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
   renderer.setSize(window.innerWidth, window.innerHeight)
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -255,7 +264,6 @@ export function initScene(canvas: HTMLCanvasElement) {
   controls.maxDistance = 8.0   // Don't let camera go too far either
   controls.update()
 
-  ensureRealShadowSystem()
   setBackgroundTheme(DEFAULT_THEME)
 
   window.addEventListener('resize', () => {
@@ -265,12 +273,20 @@ export function initScene(canvas: HTMLCanvasElement) {
   })
 }
 
-export function initContactShadow() {
-  ensureRealShadowSystem()
+export function initContactShadow(enabled: boolean) {
+  ensureBlobShadow()
+  if (contactShadowBlob) {
+    contactShadowBlob.visible = enabled
+  }
 }
 
-export function updateContactShadow() {
-  // No-op: real-time shadow mapping is handled automatically by three.js renderer
+export function updateContactShadow(vrmRoot?: THREE.Object3D | null) {
+  if (!contactShadowBlob || !contactShadowBlob.visible) return
+
+  if (vrmRoot) {
+    contactShadowBlob.position.x = vrmRoot.position.x
+    contactShadowBlob.position.z = vrmRoot.position.z
+  }
 }
 
 export function setTransparentBackground(transparent: boolean) {
