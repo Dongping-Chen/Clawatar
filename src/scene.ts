@@ -226,9 +226,9 @@ export function initScene(canvas: HTMLCanvasElement) {
 }
 
 // ═══ CONTACT SHADOW ═══
-const SHADOW_OPACITY = 0.2
-const SHADOW_BLUR_PASSES = 6
-const SHADOW_AREA = 5.0
+const SHADOW_OPACITY = 0.4
+const SHADOW_BLUR_PASSES = 4
+const SHADOW_AREA = 2.5
 const SHADOW_RES = 256
 
 let contactShadowRT: THREE.WebGLRenderTarget | null = null
@@ -247,8 +247,8 @@ export function initContactShadow() {
   contactShadowBlurRT = new THREE.WebGLRenderTarget(SHADOW_RES, SHADOW_RES)
 
   const half = SHADOW_AREA / 2
-  contactShadowCamera = new THREE.OrthographicCamera(-half, half, half, -half, 0, 8)
-  contactShadowCamera.position.set(0, 6, 0)
+  contactShadowCamera = new THREE.OrthographicCamera(-half, half, half, -half, 0.1, 10)
+  contactShadowCamera.position.set(0, 4, 0)
   contactShadowCamera.lookAt(0, 0, 0)
 
   const geo = new THREE.PlaneGeometry(SHADOW_AREA, SHADOW_AREA)

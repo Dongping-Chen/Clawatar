@@ -113,7 +113,7 @@ const _dummy = new THREE.Object3D()
 
 export function initBackgrounds() {
   const select = document.getElementById('background-select') as HTMLSelectElement | null
-  const requested = ((select?.value ?? 'default') as BackgroundPreset)
+  const requested = ((select?.value ?? 'sakura') as BackgroundPreset)
   applyBackgroundScene(requested)
 
   if (!select) return
@@ -534,7 +534,7 @@ function createBubbles(count: number): THREE.Points {
     particleVelocities[i] = 0.06 + Math.random() * 0.12
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-bubbles', positions, { color: 0xc8e8ff, size: 0.14, opacity: 0.55, texture: getBubbleTexture() })
+  return makePoints('bg-bubbles', positions, { color: 0xc8e8ff, size: 0.12, opacity: 0.6, additive: true, texture: getBubbleTexture() })
 }
 
 function createStars(count: number): THREE.Points {
@@ -601,7 +601,7 @@ function createMinimalDust(count: number): THREE.Points {
     positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z
     particlePhases[i] = Math.random() * Math.PI * 2
   }
-  return makePoints('bg-minimal-dust', positions, { color: 0xd4c8b8, size: 0.05, opacity: 0.25 })
+  return makePoints('bg-minimal-dust', positions, { color: 0xffffff, size: 0.04, opacity: 0.3 })
 }
 
 // Cached soft circle texture for all point particles

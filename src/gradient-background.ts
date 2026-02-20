@@ -10,12 +10,12 @@ type ThemeConfig = {
 
 const GRADIENT_COLORS: Record<string, ThemeConfig> = {
   sakura: { id: 0, top: [0.98, 0.82, 0.86], mid: [0.96, 0.72, 0.78], bottom: [0.92, 0.62, 0.72], speed: 0.09 },
-  sunset: { id: 1, top: [1.0, 0.82, 0.68], mid: [0.96, 0.62, 0.52], bottom: [0.85, 0.45, 0.45], speed: 0.1 },
+  sunset: { id: 1, top: [1.0, 0.72, 0.48], mid: [0.94, 0.52, 0.38], bottom: [0.82, 0.38, 0.35], speed: 0.1 },
   ocean: { id: 2, top: [0.72, 0.87, 0.96], mid: [0.52, 0.74, 0.90], bottom: [0.38, 0.58, 0.77], speed: 0.075 },
   night: { id: 3, top: [0.21, 0.18, 0.34], mid: [0.14, 0.12, 0.24], bottom: [0.09, 0.08, 0.16], speed: 0.05 },
   forest: { id: 4, top: [0.84, 0.92, 0.76], mid: [0.62, 0.78, 0.56], bottom: [0.42, 0.60, 0.40], speed: 0.075 },
   lavender: { id: 5, top: [0.93, 0.86, 0.99], mid: [0.82, 0.72, 0.94], bottom: [0.67, 0.56, 0.82], speed: 0.09 },
-  minimal: { id: 6, top: [0.98, 0.97, 0.95], mid: [0.96, 0.94, 0.93], bottom: [0.93, 0.92, 0.91], speed: 0.03 },
+  minimal: { id: 6, top: [0.94, 0.93, 0.91], mid: [0.91, 0.90, 0.88], bottom: [0.88, 0.87, 0.85], speed: 0.03 },
 }
 
 const DEFAULT_THEME = 'sakura'
@@ -330,6 +330,7 @@ export function initGradientBackground(scene: THREE.Scene) {
   })
 
   gradientMesh = new THREE.Mesh(new THREE.PlaneGeometry(64, 48), gradientMaterial)
+  gradientMesh.name = 'gradient-background'
   gradientMesh.position.set(0, 1.1, -8)
   gradientMesh.renderOrder = -1000
   gradientMesh.frustumCulled = false
