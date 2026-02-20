@@ -5,8 +5,6 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 // OutlineEffect removed per Dongping's request
-import { HorizontalBlurShader } from 'three/examples/jsm/shaders/HorizontalBlurShader.js'
-import { VerticalBlurShader } from 'three/examples/jsm/shaders/VerticalBlurShader.js'
 
 export let scene: THREE.Scene
 export let camera: THREE.PerspectiveCamera
@@ -37,6 +35,46 @@ type ThemeRGB = { r: number; g: number; b: number }
 type ThemeGradient = {
   top: ThemeRGB
   bottom: ThemeRGB
+}
+
+let shadowLight: THREE.DirectionalLight | null = null
+let shadowGround: THREE.Mesh<THREE.PlaneGeometry, THREE.ShadowMaterial> | null = null
+
+function ensureRealShadowSystem() {
+  if (shadowLight && shadowGround) return
+
+  shadowLight = new THREE.DirectionalLight(0xffffff, 0.3)
+  shadowLight.name = 'shadow-light'
+  shadowLight.position.set(0, 4, 1)
+  shadowLight.target.position.set(0, 0, 0)
+  shadowLight.castShadow = true
+  shadowLight.shadow.mapSize.width = 1024
+  shadowLight.shadow.mapSize.height = 1024
+  shadowLight.shadow.camera.near = 0.1
+  shadowLight.shadow.camera.far = 10
+  shadowLight.shadow.camera.left = -1.5
+  shadowLight.shadow.camera.right = 1.5
+  shadowLight.shadow.camera.top = 2
+  shadowLight.shadow.camera.bottom = -0.5
+  shadowLight.shadow.bias = -0.001
+  shadowLight.shadow.radius = 4
+
+  scene.add(shadowLight)
+  scene.add(shadowLight.target)
+
+  const groundGeo = new THREE.PlaneGeometry(10, 10)
+  const groundMat = new THREE.ShadowMaterial({
+    opacity: 0.3,
+    color: 0x000000,
+  })
+
+  shadowGround = new THREE.Mesh(groundGeo, groundMat)
+  shadowGround.rotation.x = -Math.PI / 2
+  shadowGround.position.y = 0
+  shadowGround.receiveShadow = true
+  shadowGround.castShadow = false
+  shadowGround.name = 'shadow-ground'
+  scene.add(shadowGround)
 }
 
 const BACKGROUND_THEMES: Record<BackgroundThemeKey, ThemeGradient> = {
@@ -179,7 +217,8 @@ export function initScene(canvas: HTMLCanvasElement) {
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = 1.04
   renderer.setClearColor(0x000000, 0)
-  renderer.shadowMap.enabled = false
+  renderer.shadowMap.enabled = true
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap
 
   const ambient = new THREE.AmbientLight(0xfff2f6, 0.9)
   ambient.name = 'ambient-light'
@@ -216,6 +255,7 @@ export function initScene(canvas: HTMLCanvasElement) {
   controls.maxDistance = 8.0   // Don't let camera go too far either
   controls.update()
 
+  ensureRealShadowSystem()
   setBackgroundTheme(DEFAULT_THEME)
 
   window.addEventListener('resize', () => {
@@ -225,206 +265,12 @@ export function initScene(canvas: HTMLCanvasElement) {
   })
 }
 
-// ═══ CONTACT SHADOW ═══
-const SHADOW_OPACITY = 0.6
-const SHADOW_BLUR_PASSES = 2
-const SHADOW_AREA = 2.5
-const SHADOW_RES = 512
-const SHADOW_DEBUG_RED_PLANE = new URLSearchParams(window.location.search).has('shadowdebug')
-
-let contactShadowRT: THREE.WebGLRenderTarget | null = null
-let contactShadowBlurRT: THREE.WebGLRenderTarget | null = null
-let contactShadowCamera: THREE.OrthographicCamera | null = null
-let contactShadowPlane: THREE.Mesh | null = null
-let contactShadowBlurPlane: THREE.Mesh | null = null
-let blurHShader: THREE.ShaderMaterial | null = null
-let blurVShader: THREE.ShaderMaterial | null = null
-let shadowBlurScene: THREE.Scene | null = null
-let shadowBlurCamera: THREE.OrthographicCamera | null = null
-let shadowSilhouetteMaterial: THREE.MeshBasicMaterial | null = null
-
-const _shadowBounds = new THREE.Box3()
-const _shadowCenter = new THREE.Vector3()
-const _shadowSize = new THREE.Vector3()
-
-function updateShadowCaptureFromCharacterBounds(): boolean {
-  _shadowBounds.makeEmpty()
-
-  scene.traverse((obj) => {
-    if (!(obj instanceof THREE.Mesh)) return
-    if (!obj.visible) return
-    if (obj.name === 'contact-shadow' || obj.name === 'gradient-background' || obj.name === 'background-bokeh' || obj.name.startsWith('bg-')) return
-
-    const isSkinned = (obj as THREE.SkinnedMesh).isSkinnedMesh === true
-    const isCharacterLike = isSkinned || obj.name.toLowerCase().includes('vrm') || obj.name.toLowerCase().includes('face') || obj.name.toLowerCase().includes('hair')
-    if (!isCharacterLike) return
-
-    const geo = obj.geometry
-    if (!geo?.boundingBox) geo.computeBoundingBox()
-    if (!geo?.boundingBox) return
-
-    const meshBox = geo.boundingBox.clone()
-    meshBox.applyMatrix4(obj.matrixWorld)
-    _shadowBounds.union(meshBox)
-  })
-
-  if (_shadowBounds.isEmpty()) return false
-  if (!contactShadowCamera || !contactShadowPlane) return false
-
-  _shadowBounds.getCenter(_shadowCenter)
-  _shadowBounds.getSize(_shadowSize)
-
-  const radius = Math.max(0.6, Math.max(_shadowSize.x, _shadowSize.z) * 0.75)
-  contactShadowCamera.left = -radius
-  contactShadowCamera.right = radius
-  contactShadowCamera.top = radius
-  contactShadowCamera.bottom = -radius
-  contactShadowCamera.near = 0.01
-  contactShadowCamera.far = Math.max(8, _shadowSize.y + 6)
-  contactShadowCamera.position.set(_shadowCenter.x, _shadowBounds.max.y + 2.2, _shadowCenter.z)
-  contactShadowCamera.lookAt(_shadowCenter.x, _shadowBounds.min.y, _shadowCenter.z)
-  contactShadowCamera.updateProjectionMatrix()
-
-  contactShadowPlane.position.set(_shadowCenter.x, _shadowBounds.min.y + 0.015, _shadowCenter.z)
-  contactShadowPlane.scale.setScalar((radius * 2) / SHADOW_AREA)
-
-  return true
-}
-
 export function initContactShadow() {
-  contactShadowRT = new THREE.WebGLRenderTarget(SHADOW_RES, SHADOW_RES)
-  contactShadowBlurRT = new THREE.WebGLRenderTarget(SHADOW_RES, SHADOW_RES)
-
-  const half = SHADOW_AREA / 2
-  contactShadowCamera = new THREE.OrthographicCamera(-half, half, half, -half, 0.1, 10)
-  contactShadowCamera.position.set(0, 4, 0)
-  contactShadowCamera.lookAt(0, 0, 0)
-
-  const geo = new THREE.PlaneGeometry(SHADOW_AREA, SHADOW_AREA)
-  // Custom shader: radial fade so edges blend to transparent
-  const mat = new THREE.ShaderMaterial({
-    uniforms: {
-      tShadow: { value: contactShadowRT.texture },
-      uOpacity: { value: SHADOW_OPACITY },
-      uDebugRed: { value: SHADOW_DEBUG_RED_PLANE ? 1.0 : 0.0 },
-    },
-    vertexShader: `
-      varying vec2 vUv;
-      void main() {
-        vUv = uv;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      uniform sampler2D tShadow;
-      uniform float uOpacity;
-      uniform float uDebugRed;
-      varying vec2 vUv;
-      void main() {
-        vec4 shadow = texture2D(tShadow, vUv);
-        // Radial fade from center — fully opaque at center, transparent at edges
-        vec2 centered = vUv - 0.5;
-        float dist = length(centered) * 2.0; // 0 at center, 1 at corners
-        float fade = 1.0 - smoothstep(0.3, 0.95, dist);
-        float alpha = (1.0 - shadow.r) * uOpacity * fade;
-        vec3 color = mix(vec3(0.0), vec3(1.0, 0.0, 0.0), uDebugRed);
-        gl_FragColor = vec4(color, alpha);
-      }
-    `,
-    transparent: true,
-    depthWrite: false,
-    depthTest: true,
-    blending: THREE.CustomBlending,
-    blendEquation: THREE.AddEquation,
-    blendSrc: THREE.SrcAlphaFactor,
-    blendDst: THREE.OneMinusSrcAlphaFactor,
-    blendEquationAlpha: THREE.AddEquation,
-    blendSrcAlpha: THREE.OneFactor,
-    blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
-  })
-
-  contactShadowPlane = new THREE.Mesh(geo, mat)
-  contactShadowPlane.rotation.x = -Math.PI / 2
-  contactShadowPlane.position.y = 0.005
-  contactShadowPlane.renderOrder = -1
-  contactShadowPlane.name = 'contact-shadow'
-  scene.add(contactShadowPlane)
-
-  blurHShader = new THREE.ShaderMaterial(HorizontalBlurShader)
-  blurHShader.depthTest = false
-
-  blurVShader = new THREE.ShaderMaterial(VerticalBlurShader)
-  blurVShader.depthTest = false
-
-  contactShadowBlurPlane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2))
-
-  shadowBlurScene = new THREE.Scene()
-  shadowBlurScene.add(contactShadowBlurPlane)
-
-  shadowBlurCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
-  shadowSilhouetteMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide })
+  ensureRealShadowSystem()
 }
 
 export function updateContactShadow() {
-  if (!contactShadowRT || !contactShadowBlurRT || !contactShadowCamera || !contactShadowPlane || !contactShadowBlurPlane || !blurHShader || !blurVShader || !shadowBlurScene || !shadowBlurCamera || !shadowSilhouetteMaterial) {
-    return
-  }
-
-  const hasBounds = updateShadowCaptureFromCharacterBounds()
-  console.log('[contact-shadow] updateContactShadow', { hasBounds, shadowOpacity: SHADOW_OPACITY, shadowRes: SHADOW_RES, shadowArea: SHADOW_AREA })
-  if (!hasBounds) {
-    contactShadowPlane.visible = false
-    return
-  }
-
-  contactShadowPlane.visible = false
-  const hidden: THREE.Object3D[] = []
-  scene.traverse((obj) => {
-    if ((obj.name === 'gradient-background' || obj.name === 'background-bokeh' || obj.name === 'contact-shadow' || obj.name.startsWith('bg-')) && obj.visible) {
-      obj.visible = false
-      hidden.push(obj)
-    }
-  })
-
-  const prevBg = scene.background
-  const prevOverride = scene.overrideMaterial
-  const prevClearColor = renderer.getClearColor(new THREE.Color())
-  const prevClearAlpha = renderer.getClearAlpha()
-
-  scene.background = null
-  scene.overrideMaterial = shadowSilhouetteMaterial
-
-  renderer.setClearColor(0xffffff, 1)
-  renderer.setRenderTarget(contactShadowRT)
-  renderer.clear()
-  renderer.render(scene, contactShadowCamera)
-
-  const blurAmount = 2.0 / SHADOW_RES
-  for (let i = 0; i < SHADOW_BLUR_PASSES; i += 1) {
-    blurHShader.uniforms.tDiffuse.value = contactShadowRT.texture
-    blurHShader.uniforms.h.value = blurAmount * (SHADOW_BLUR_PASSES - i)
-    contactShadowBlurPlane.material = blurHShader
-    renderer.setRenderTarget(contactShadowBlurRT)
-    renderer.clear()
-    renderer.render(shadowBlurScene, shadowBlurCamera)
-
-    blurVShader.uniforms.tDiffuse.value = contactShadowBlurRT.texture
-    blurVShader.uniforms.v.value = blurAmount * (SHADOW_BLUR_PASSES - i)
-    contactShadowBlurPlane.material = blurVShader
-    renderer.setRenderTarget(contactShadowRT)
-    renderer.clear()
-    renderer.render(shadowBlurScene, shadowBlurCamera)
-  }
-
-  scene.overrideMaterial = prevOverride
-  scene.background = prevBg
-  renderer.setRenderTarget(null)
-  renderer.setClearColor(prevClearColor, prevClearAlpha)
-
-  contactShadowPlane.visible = true
-  for (const obj of hidden) obj.visible = true
-
-  ;(contactShadowPlane.material as THREE.ShaderMaterial).uniforms.tShadow.value = contactShadowRT.texture
+  // No-op: real-time shadow mapping is handled automatically by three.js renderer
 }
 
 export function setTransparentBackground(transparent: boolean) {

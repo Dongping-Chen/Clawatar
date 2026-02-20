@@ -408,6 +408,8 @@ function createInstancedPetals(count: number): THREE.InstancedMesh {
   const mesh = new THREE.InstancedMesh(geo, mat, count)
   mesh.name = 'bg-petals'
   mesh.frustumCulled = false
+  mesh.castShadow = false
+  mesh.receiveShadow = false
 
   // Per-instance colors for variety
   const colorArray = new Float32Array(count * 3)
@@ -472,6 +474,8 @@ function createInstancedLeaves(count: number): THREE.InstancedMesh {
   const mesh = new THREE.InstancedMesh(geo, mat, count)
   mesh.name = 'bg-leaves'
   mesh.frustumCulled = false
+  mesh.castShadow = false
+  mesh.receiveShadow = false
   mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3)
 
   const positions = new Float32Array(count * 3)
@@ -719,6 +723,8 @@ function makePoints(
   const points = new THREE.Points(geometry, material)
   points.name = name
   points.frustumCulled = false
+  points.castShadow = false
+  points.receiveShadow = false
   scene.add(points)
   return points
 }
