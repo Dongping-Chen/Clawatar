@@ -111,9 +111,9 @@ type InstancedParticleData = {
 let instancedData: InstancedParticleData | null = null
 const _dummy = new THREE.Object3D()
 
-export function initBackgrounds() {
+export function initBackgrounds(initialTheme?: string) {
   const select = document.getElementById('background-select') as HTMLSelectElement | null
-  const requested = ((select?.value ?? 'sakura') as BackgroundPreset)
+  const requested = ((initialTheme || select?.value || 'sakura') as BackgroundPreset)
   applyBackgroundScene(requested)
 
   if (!select) return

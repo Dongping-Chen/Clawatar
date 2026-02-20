@@ -26,104 +26,71 @@ export function setMeetingMode(enabled: boolean) { meetingMode = enabled }
 
 // Meeting-friendly idle categories — subtle seated/standing animations only
 const MEETING_IDLE_CATEGORIES: string[] = [
-  '40_Happy Idle',
+  '119_Idle',
   '88_Thinking',
   '118_Head Nod Yes',
-  '125_Laughing',
-  '119_Idle',
-  '161_Waving',
   '145_Shrugging',
+  'dm_0',
+  'dm_5',
+  'dm_6',
+  'dm_7',
+  'dm_120',
+  'dm_121',
+  'dm_128',
 ]
 
-// DM Motionpack animations organized by emotion (from vrma_catalog.json)
-// These are high-quality Booth companion animations
+// Animation taxonomy based on Dongping's manual review (2026-02-19)
 const IDLE_CATEGORIES = {
-  // Happy — cheerful greetings, cute gestures, peace signs (23 anims)
-  happy: [
-    'dm_4',   // wave_greet
-    'dm_10',  // raise_hand_bow_greet
-    'dm_11',  // raise_hand_bow_greet_2
-    'dm_24',  // cat_paw_cute
-    'dm_26',  // jump_peace_sign
-    'dm_27',  // hands_behind_sway
-    'dm_29',  // heart_gesture
-    'dm_41',  // happy_sway
-    'dm_42',  // cute_attention_call
-    'dm_44',  // lean_to_side_curious
-    'dm_46',  // crossed_legs_hands_hips
-    'dm_47',  // high_five_request
-    'dm_48',  // fist_bump_request
-    'dm_124', // standing_idle_happy_shy
-    'dm_125', // standing_idle_hands_near_face
-  ],
-  // Neutral — presenting, thinking, natural waiting (36 anims)
-  neutral: [
-    'dm_0',   // present_alternate_hands
-    'dm_3',   // chin_rest_think
-    'dm_5',   // present_one_hand
-    'dm_6',   // present_one_hand_2
-    'dm_7',   // present_one_hand_3
-    'dm_120', // standing_idle_natural_wait
-    'dm_121', 'dm_122', 'dm_123',
-    'dm_126', 'dm_127', 'dm_128',
-    'dm_130', 'dm_131', 'dm_132', 'dm_133',
-    'dm_134', 'dm_135', 'dm_136', 'dm_137',
-  ],
-  // Loving — heart gestures, blowing kisses (7 anims)
-  loving: [
-    'dm_16',  // hands_heart_speak
-    'dm_20',  // blow_kiss
-    'dm_21',  // blow_kiss_bow
-    'dm_29',  // heart_gesture
-    'dm_30',  // half_heart_right
-    'dm_31',  // half_heart_left
-    'dm_32',  // big_heart
-  ],
-  // Excited — cheering, jumping, celebrating (8 anims)
-  excited: [
-    'dm_2',   // cheer_arms_swing
-    'dm_15',  // fist_pump_speak
-    'dm_18',  // big_jump_celebrate
-    'dm_19',  // small_jump_attention
-    'dm_28',  // hands_hips_cheer
-    'dm_34',  // thumbs_up_dance
-  ],
-  // Shy — cute fidgeting, finger poking (5 anims)
-  shy: [
-    'dm_40',  // finger_poke_shy
-    'dm_51',  // shy_twist_chest
-    'dm_124', // standing_idle_happy_shy
-    'dm_125', // standing_idle_hands_near_face
-    'dm_129', // standing_idle_cute_shy
-  ],
-  // Tired — yawning, sleepy, stretching (11 anims, for evening/night)
-  tired: [
-    'dm_17',  // drooping_tired
-    'dm_110', // yawn_tired
-    'dm_111', // tired_rub_eyes
-    'dm_112', // lie_down_yawn_stand
-    'dm_113', // lie_down_rub_eyes_stand
-    'dm_114', 'dm_115', 'dm_116', 'dm_117', 'dm_118', 'dm_119',
-  ],
-  // Stretching — morning/self-care (10 anims)
-  stretching: [
-    'dm_80', 'dm_81', 'dm_82', 'dm_83', 'dm_84',
-    'dm_85', 'dm_86', 'dm_87', 'dm_88', 'dm_89',
-  ],
-  // Proud — confident, cool poses (8 anims)
-  proud: [
-    'dm_14',  // arms_up_tsundere
-    'dm_23',  // finger_guns_cool
-    'dm_33',  // single_finger_gun
-    'dm_34',  // thumbs_up_dance
-    'dm_36',  // confident_dance
-    'dm_37', 'dm_38', 'dm_39',
-  ],
-  // Dance — Reze's signature dances (HIGHEST PRIORITY for dance picks)
-  dance: [
-    'reze_dance_soft',  // Reze dance — soft/gentle version
-    'reze_dance_hard',  // Reze dance — hard/energetic version
-  ],
+  // Talking — use during conversation (very important)
+  talking: ['dm_0', 'dm_5', 'dm_6', 'dm_7', 'dm_13', 'dm_14', 'dm_15', 'dm_90', '86_Talking', '137_Quick Formal Bow', '138_Quick Informal Bow'],
+
+  // Happy/Encouraging reactions
+  happy: ['19_Clapping', 'dm_2', 'dm_28', 'dm_45', 'dm_53'],
+
+  // Hello/Greeting
+  hello: ['79_Standing Greeting', '161_Waving', 'dm_4', 'dm_10', 'dm_11', 'dm_12', 'dm_39'],
+
+  // Thinking/Working
+  thinking: ['88_Thinking', 'dm_3', 'dm_108'],
+
+  // Sad/Defeated
+  sad: ['22_Crying', '23_Crying_2', '26_Defeat', '142_Sad Idle'],
+
+  // Angry
+  angry: ['0_Angry', '94_Angry Gesture'],
+
+  // Taunt/Playful
+  taunt: ['53_Loser', '56_No', '116_Happy Hand Gesture', 'dm_8', 'dm_9'],
+
+  // Affection (blow kiss, heart)
+  affection: ['dm_20', 'dm_21', 'dm_29', 'dm_41'],
+
+  // Cute poses
+  cute: ['dm_26', 'dm_30', 'dm_31', 'dm_43', 'dm_47', 'dm_48', 'dm_56', 'dm_57'],
+
+  // Dance
+  dance: ['1_Arms Hip Hop Dance', '3_Bboy Hip Hop Move', '4_Belly Dance', '5_Bellydancing', '18_Chicken Dance', '25_Dancing Twerk', '41_Hip Hop Dancing', '42_Hip Hop Dancing_2', '43_Hip Hop Dancing_3', '44_Hip Hop Dancing_4', '45_House Dancing', '46_House Dancing_2', '47_Jazz Dancing', '54_Macarena Dance', '67_Rumba Dancing', '70_Silly Dancing', '78_Snake Hip Hop Dance', '83_Swing Dancing', '84_Swing Dancing_2', '85_Swing Dancing_3', 'dm_38', 'reze_dance_hard'],
+
+  // Idle (standing)
+  idle: ['119_Idle', 'dm_22', 'dm_23', 'dm_24', 'dm_33', 'dm_46', 'dm_59', 'dm_63', 'dm_82', 'dm_86', 'dm_88', 'dm_89', 'dm_101', 'dm_120', 'dm_121', 'dm_122', 'dm_123', 'dm_124', 'dm_125', 'dm_126', 'dm_127', 'dm_128', 'dm_138', 'dm_139'],
+
+  // Night/Sleepy idle
+  tired: ['29_Drunk Idle Variation', '30_Drunk Idle', '64_Rejected', '65_Relieved Sigh', '127_Leaning', '163_Yawn', 'dm_17', 'dm_110', 'dm_111', 'dm_129'],
+
+  // Sitting idle
+  sitting: ['73_Sitting Disbelief', '74_Sitting Thumbs Up', '75_Sitting', '76_Sitting_2', '149_Sitting Idle', '150_Sitting Laughing', 'dm_85', 'dm_87', 'dm_114'],
+
+  // Oneshot micro-actions
+  oneshot: ['49_Joyful Jump', '131_Neck Stretching', '155_Talking On Phone', 'dm_19', 'dm_32', 'dm_134', 'dm_135'],
+
+  // Other reactions
+  refuse: ['95_Annoyed Head Shake', '144_Shaking Head No', 'dm_27'],
+  agree: ['118_Head Nod Yes'],
+  grateful: ['156_Thankful'],
+  shy: ['dm_51', 'dm_40'],
+  singing: ['71_Singing', 'dm_97'],
+  shush: ['dm_42', 'dm_52'],
+  whatever: ['93_Whatever Gesture', '145_Shrugging'],
 }
 
 const HOT_SYNC_ACTIONS: string[] = Array.from(new Set([
@@ -144,15 +111,18 @@ function ensureAnimationWarmupStarted() {
 
 // Default weights (overridden by time-of-day)
 const CATEGORY_WEIGHTS: Array<[keyof typeof IDLE_CATEGORIES, number]> = [
-  ['neutral', 0.22],
-  ['happy', 0.20],
-  ['dance', 0.12],   // Reze's signature dance — high priority!
-  ['shy', 0.10],
-  ['loving', 0.09],
-  ['excited', 0.07],
-  ['proud', 0.07],
-  ['stretching', 0.07],
-  ['tired', 0.06],
+  ['talking', 0.25],
+  ['idle', 0.20],
+  ['happy', 0.10],
+  ['cute', 0.08],
+  ['dance', 0.08],
+  ['tired', 0.07],
+  ['affection', 0.05],
+  ['taunt', 0.04],
+  ['oneshot', 0.04],
+  ['shy', 0.03],
+  ['sitting', 0.03],
+  ['whatever', 0.03],
 ]
 
 // Time-of-day weight adjustments
@@ -160,56 +130,68 @@ function getTimeAdjustedWeights(): Array<[keyof typeof IDLE_CATEGORIES, number]>
   const hour = new Date().getHours()
 
   if (hour >= 23 || hour < 6) {
-    // Late night — sleepy, tired, cozy (but still some dance~)
+    // Late night — sleepy, tired, cozy
     return [
-      ['tired', 0.35],
-      ['neutral', 0.18],
-      ['shy', 0.13],
-      ['loving', 0.10],
-      ['happy', 0.08],
-      ['dance', 0.08],
-      ['stretching', 0.05],
-      ['excited', 0.02],
-      ['proud', 0.01],
+      ['tired', 0.30],
+      ['idle', 0.20],
+      ['talking', 0.12],
+      ['sitting', 0.10],
+      ['affection', 0.08],
+      ['cute', 0.06],
+      ['shy', 0.05],
+      ['happy', 0.03],
+      ['oneshot', 0.03],
+      ['dance', 0.02],
+      ['whatever', 0.01],
+      ['taunt', 0.00],
     ]
   } else if (hour >= 6 && hour < 10) {
-    // Morning — stretching, waking up, gradually cheerful
+    // Morning — waking up, stretching, gradually cheerful
     return [
-      ['stretching', 0.25],
-      ['neutral', 0.18],
-      ['happy', 0.15],
+      ['idle', 0.25],
+      ['talking', 0.18],
       ['tired', 0.12],
-      ['dance', 0.10],
-      ['shy', 0.08],
-      ['excited', 0.05],
-      ['loving', 0.04],
-      ['proud', 0.03],
+      ['happy', 0.10],
+      ['cute', 0.10],
+      ['oneshot', 0.06],
+      ['dance', 0.05],
+      ['affection', 0.05],
+      ['shy', 0.04],
+      ['sitting', 0.03],
+      ['whatever', 0.01],
+      ['taunt', 0.01],
     ]
   } else if (hour >= 10 && hour < 18) {
     // Daytime — active, happy, dancing!
     return [
-      ['happy', 0.22],
-      ['neutral', 0.18],
-      ['dance', 0.15],    // Daytime = most dancing
-      ['excited', 0.12],
-      ['proud', 0.10],
-      ['loving', 0.08],
-      ['shy', 0.06],
-      ['stretching', 0.05],
-      ['tired', 0.04],
+      ['talking', 0.25],
+      ['idle', 0.15],
+      ['happy', 0.12],
+      ['dance', 0.12],
+      ['cute', 0.10],
+      ['taunt', 0.06],
+      ['affection', 0.05],
+      ['oneshot', 0.05],
+      ['whatever', 0.04],
+      ['shy', 0.03],
+      ['sitting', 0.02],
+      ['tired', 0.01],
     ]
   } else {
     // Evening (18-23) — winding down, sweet, relaxed
     return [
-      ['neutral', 0.20],
-      ['happy', 0.18],
-      ['loving', 0.13],
-      ['shy', 0.12],
-      ['dance', 0.12],
+      ['talking', 0.22],
+      ['idle', 0.18],
+      ['cute', 0.10],
+      ['affection', 0.10],
+      ['happy', 0.08],
       ['tired', 0.08],
-      ['stretching', 0.07],
-      ['excited', 0.05],
-      ['proud', 0.05],
+      ['dance', 0.06],
+      ['shy', 0.05],
+      ['sitting', 0.05],
+      ['oneshot', 0.04],
+      ['whatever', 0.02],
+      ['taunt', 0.02],
     ]
   }
 }
@@ -239,7 +221,7 @@ function pickIdleActionWithCategory(): { action: string; category: keyof typeof 
   const weights = getTimeAdjustedWeights()
   const roll = rng()
   let cumulative = 0
-  let category: keyof typeof IDLE_CATEGORIES = 'neutral'
+  let category: keyof typeof IDLE_CATEGORIES = 'idle'
   for (const [cat, weight] of weights) {
     cumulative += weight
     if (roll <= cumulative) {
@@ -268,20 +250,25 @@ function setState(s: CharacterState) {
 // Map animation categories to subtle expression settings
 function getExpressionForCategory(category: keyof typeof IDLE_CATEGORIES): { name: string; weight: number } | null {
   switch (category) {
-    case 'happy':    return { name: 'happy', weight: 0.3 }    // Subtle smile, not full squint
-    case 'loving':   return { name: 'happy', weight: 0.35 }
-    case 'excited':  return { name: 'happy', weight: 0.25 }
-    case 'shy':      return { name: 'happy', weight: 0.15 }   // Tiny shy smile
-    case 'tired':    return { name: 'relaxed', weight: 0.4 }  // Sleepy eyes
-    case 'proud':    return { name: 'happy', weight: 0.2 }
-    case 'dance':    return { name: 'happy', weight: 0.4 }    // Big smile while dancing!
-    case 'neutral':  return null  // No expression override — natural
-    case 'stretching': return null
+    case 'happy':     return { name: 'happy', weight: 0.3 }
+    case 'cute':      return { name: 'happy', weight: 0.25 }
+    case 'affection': return { name: 'happy', weight: 0.35 }
+    case 'shy':       return { name: 'happy', weight: 0.15 }
+    case 'tired':     return { name: 'relaxed', weight: 0.4 }
+    case 'dance':     return { name: 'happy', weight: 0.4 }
+    case 'singing':   return { name: 'happy', weight: 0.3 }
+    case 'taunt':     return { name: 'happy', weight: 0.2 }
+    case 'sad':       return { name: 'sad', weight: 0.4 }
+    case 'angry':     return { name: 'angry', weight: 0.4 }
+    case 'talking':   return null
+    case 'idle':      return null
+    case 'sitting':   return null
+    case 'oneshot':   return null
     default: return null
   }
 }
 
-let currentIdleCategory: keyof typeof IDLE_CATEGORIES = 'neutral'
+let currentIdleCategory: keyof typeof IDLE_CATEGORIES = 'idle'
 
 interface ActionSyncOptions {
   sync?: boolean

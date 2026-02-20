@@ -132,6 +132,7 @@ const isEmbed = params.has('embed')
 const isMeeting = params.has('meeting')
 const isTransparent = params.has('transparent')
 const isBgOnly = params.has('bgonly')
+const initialTheme = params.get('theme') || 'sakura'
 
 function initMusicToggleButton() {
   const button = document.createElement('button')
@@ -183,7 +184,7 @@ function init() {
   initScene(canvas)
   initContactShadow()
   if (!isTransparent) {
-    initGradientBackground(scene)
+    initGradientBackground(scene, initialTheme)
   }
   initLookAt(canvas)
 
@@ -275,7 +276,7 @@ function init() {
     initReactiveIdle(canvas)
     initEmotionBar()
   }
-  initBackgrounds()
+  initBackgrounds(initialTheme)
   initCameraPresets()
   initRoomScene()
   if (!isEmbed) {

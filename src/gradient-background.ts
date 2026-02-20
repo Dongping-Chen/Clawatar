@@ -302,11 +302,11 @@ function isEmbedMode(): boolean {
   return new URLSearchParams(window.location.search).has('embed')
 }
 
-export function initGradientBackground(scene: THREE.Scene) {
+export function initGradientBackground(scene: THREE.Scene, initialTheme?: string) {
   removeGradientBackground()
   currentScene = scene
 
-  const defaultTheme = getTheme(DEFAULT_THEME)
+  const defaultTheme = getTheme(initialTheme || DEFAULT_THEME)
   gradientMaterial = new THREE.ShaderMaterial({
     uniforms: {
       uTime: { value: 0 },
