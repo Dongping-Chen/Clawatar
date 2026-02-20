@@ -38,7 +38,7 @@ type ThemeGradient = {
 }
 
 let shadowLight: THREE.DirectionalLight | null = null
-let shadowGround: THREE.Mesh<THREE.PlaneGeometry, THREE.ShadowMaterial> | null = null
+let shadowGround: THREE.Mesh | null = null
 
 function ensureRealShadowSystem() {
   if (shadowLight && shadowGround) return
@@ -211,7 +211,7 @@ export function initScene(canvas: HTMLCanvasElement) {
   camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.01, 100)
   camera.position.set(0, 1.2, 3.0)
 
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, premultipliedAlpha: false })
   renderer.setSize(window.innerWidth, window.innerHeight)
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.toneMapping = THREE.ACESFilmicToneMapping

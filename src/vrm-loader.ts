@@ -52,6 +52,7 @@ export async function loadVRM(urlOrBlob: string | Blob): Promise<VRM> {
   })
 
   scene.add(vrm.scene)
+
   state.vrm = vrm
   state.mixer = new THREE.AnimationMixer(vrm.scene)
 
