@@ -226,10 +226,11 @@ export function initScene(canvas: HTMLCanvasElement) {
 }
 
 // ═══ CONTACT SHADOW ═══
-const SHADOW_OPACITY = 0.4
-const SHADOW_BLUR_PASSES = 4
+const SHADOW_OPACITY = 0.6
+const SHADOW_BLUR_PASSES = 2
 const SHADOW_AREA = 2.5
-const SHADOW_RES = 256
+const SHADOW_RES = 512
+const SHADOW_DEBUG_RED_PLANE = new URLSearchParams(window.location.search).has('shadowdebug')
 
 let contactShadowRT: THREE.WebGLRenderTarget | null = null
 let contactShadowBlurRT: THREE.WebGLRenderTarget | null = null
@@ -241,6 +242,54 @@ let blurVShader: THREE.ShaderMaterial | null = null
 let shadowBlurScene: THREE.Scene | null = null
 let shadowBlurCamera: THREE.OrthographicCamera | null = null
 let shadowSilhouetteMaterial: THREE.MeshBasicMaterial | null = null
+
+const _shadowBounds = new THREE.Box3()
+const _shadowCenter = new THREE.Vector3()
+const _shadowSize = new THREE.Vector3()
+
+function updateShadowCaptureFromCharacterBounds(): boolean {
+  _shadowBounds.makeEmpty()
+
+  scene.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return
+    if (!obj.visible) return
+    if (obj.name === 'contact-shadow' || obj.name === 'gradient-background' || obj.name === 'background-bokeh' || obj.name.startsWith('bg-')) return
+
+    const isSkinned = (obj as THREE.SkinnedMesh).isSkinnedMesh === true
+    const isCharacterLike = isSkinned || obj.name.toLowerCase().includes('vrm') || obj.name.toLowerCase().includes('face') || obj.name.toLowerCase().includes('hair')
+    if (!isCharacterLike) return
+
+    const geo = obj.geometry
+    if (!geo?.boundingBox) geo.computeBoundingBox()
+    if (!geo?.boundingBox) return
+
+    const meshBox = geo.boundingBox.clone()
+    meshBox.applyMatrix4(obj.matrixWorld)
+    _shadowBounds.union(meshBox)
+  })
+
+  if (_shadowBounds.isEmpty()) return false
+  if (!contactShadowCamera || !contactShadowPlane) return false
+
+  _shadowBounds.getCenter(_shadowCenter)
+  _shadowBounds.getSize(_shadowSize)
+
+  const radius = Math.max(0.6, Math.max(_shadowSize.x, _shadowSize.z) * 0.75)
+  contactShadowCamera.left = -radius
+  contactShadowCamera.right = radius
+  contactShadowCamera.top = radius
+  contactShadowCamera.bottom = -radius
+  contactShadowCamera.near = 0.01
+  contactShadowCamera.far = Math.max(8, _shadowSize.y + 6)
+  contactShadowCamera.position.set(_shadowCenter.x, _shadowBounds.max.y + 2.2, _shadowCenter.z)
+  contactShadowCamera.lookAt(_shadowCenter.x, _shadowBounds.min.y, _shadowCenter.z)
+  contactShadowCamera.updateProjectionMatrix()
+
+  contactShadowPlane.position.set(_shadowCenter.x, _shadowBounds.min.y + 0.015, _shadowCenter.z)
+  contactShadowPlane.scale.setScalar((radius * 2) / SHADOW_AREA)
+
+  return true
+}
 
 export function initContactShadow() {
   contactShadowRT = new THREE.WebGLRenderTarget(SHADOW_RES, SHADOW_RES)
@@ -257,6 +306,7 @@ export function initContactShadow() {
     uniforms: {
       tShadow: { value: contactShadowRT.texture },
       uOpacity: { value: SHADOW_OPACITY },
+      uDebugRed: { value: SHADOW_DEBUG_RED_PLANE ? 1.0 : 0.0 },
     },
     vertexShader: `
       varying vec2 vUv;
@@ -268,6 +318,7 @@ export function initContactShadow() {
     fragmentShader: `
       uniform sampler2D tShadow;
       uniform float uOpacity;
+      uniform float uDebugRed;
       varying vec2 vUv;
       void main() {
         vec4 shadow = texture2D(tShadow, vUv);
@@ -276,11 +327,20 @@ export function initContactShadow() {
         float dist = length(centered) * 2.0; // 0 at center, 1 at corners
         float fade = 1.0 - smoothstep(0.3, 0.95, dist);
         float alpha = (1.0 - shadow.r) * uOpacity * fade;
-        gl_FragColor = vec4(0.0, 0.0, 0.0, alpha);
+        vec3 color = mix(vec3(0.0), vec3(1.0, 0.0, 0.0), uDebugRed);
+        gl_FragColor = vec4(color, alpha);
       }
     `,
     transparent: true,
     depthWrite: false,
+    depthTest: true,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.SrcAlphaFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendEquationAlpha: THREE.AddEquation,
+    blendSrcAlpha: THREE.OneFactor,
+    blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
   })
 
   contactShadowPlane = new THREE.Mesh(geo, mat)
@@ -302,11 +362,18 @@ export function initContactShadow() {
   shadowBlurScene.add(contactShadowBlurPlane)
 
   shadowBlurCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
-  shadowSilhouetteMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 })
+  shadowSilhouetteMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide })
 }
 
 export function updateContactShadow() {
   if (!contactShadowRT || !contactShadowBlurRT || !contactShadowCamera || !contactShadowPlane || !contactShadowBlurPlane || !blurHShader || !blurVShader || !shadowBlurScene || !shadowBlurCamera || !shadowSilhouetteMaterial) {
+    return
+  }
+
+  const hasBounds = updateShadowCaptureFromCharacterBounds()
+  console.log('[contact-shadow] updateContactShadow', { hasBounds, shadowOpacity: SHADOW_OPACITY, shadowRes: SHADOW_RES, shadowArea: SHADOW_AREA })
+  if (!hasBounds) {
+    contactShadowPlane.visible = false
     return
   }
 
@@ -332,7 +399,7 @@ export function updateContactShadow() {
   renderer.clear()
   renderer.render(scene, contactShadowCamera)
 
-  const blurAmount = 4.0 / SHADOW_RES
+  const blurAmount = 2.0 / SHADOW_RES
   for (let i = 0; i < SHADOW_BLUR_PASSES; i += 1) {
     blurHShader.uniforms.tDiffuse.value = contactShadowRT.texture
     blurHShader.uniforms.h.value = blurAmount * (SHADOW_BLUR_PASSES - i)

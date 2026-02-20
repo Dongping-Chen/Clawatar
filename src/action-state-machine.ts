@@ -111,89 +111,24 @@ function ensureAnimationWarmupStarted() {
 
 // Default weights (overridden by time-of-day)
 const CATEGORY_WEIGHTS: Array<[keyof typeof IDLE_CATEGORIES, number]> = [
-  ['talking', 0.25],
-  ['idle', 0.20],
+  ['idle', 0.25],
+  ['cute', 0.15],
+  ['talking', 0.10],
   ['happy', 0.10],
-  ['cute', 0.08],
-  ['dance', 0.08],
-  ['tired', 0.07],
-  ['affection', 0.05],
-  ['taunt', 0.04],
+  ['affection', 0.08],
+  ['dance', 0.07],
+  ['tired', 0.06],
+  ['taunt', 0.05],
+  ['shy', 0.04],
   ['oneshot', 0.04],
-  ['shy', 0.03],
   ['sitting', 0.03],
   ['whatever', 0.03],
 ]
 
 // Time-of-day weight adjustments
 function getTimeAdjustedWeights(): Array<[keyof typeof IDLE_CATEGORIES, number]> {
-  const hour = new Date().getHours()
-
-  if (hour >= 23 || hour < 6) {
-    // Late night — sleepy, tired, cozy
-    return [
-      ['tired', 0.30],
-      ['idle', 0.20],
-      ['talking', 0.12],
-      ['sitting', 0.10],
-      ['affection', 0.08],
-      ['cute', 0.06],
-      ['shy', 0.05],
-      ['happy', 0.03],
-      ['oneshot', 0.03],
-      ['dance', 0.02],
-      ['whatever', 0.01],
-      ['taunt', 0.00],
-    ]
-  } else if (hour >= 6 && hour < 10) {
-    // Morning — waking up, stretching, gradually cheerful
-    return [
-      ['idle', 0.25],
-      ['talking', 0.18],
-      ['tired', 0.12],
-      ['happy', 0.10],
-      ['cute', 0.10],
-      ['oneshot', 0.06],
-      ['dance', 0.05],
-      ['affection', 0.05],
-      ['shy', 0.04],
-      ['sitting', 0.03],
-      ['whatever', 0.01],
-      ['taunt', 0.01],
-    ]
-  } else if (hour >= 10 && hour < 18) {
-    // Daytime — active, happy, dancing!
-    return [
-      ['talking', 0.25],
-      ['idle', 0.15],
-      ['happy', 0.12],
-      ['dance', 0.12],
-      ['cute', 0.10],
-      ['taunt', 0.06],
-      ['affection', 0.05],
-      ['oneshot', 0.05],
-      ['whatever', 0.04],
-      ['shy', 0.03],
-      ['sitting', 0.02],
-      ['tired', 0.01],
-    ]
-  } else {
-    // Evening (18-23) — winding down, sweet, relaxed
-    return [
-      ['talking', 0.22],
-      ['idle', 0.18],
-      ['cute', 0.10],
-      ['affection', 0.10],
-      ['happy', 0.08],
-      ['tired', 0.08],
-      ['dance', 0.06],
-      ['shy', 0.05],
-      ['sitting', 0.05],
-      ['oneshot', 0.04],
-      ['whatever', 0.02],
-      ['taunt', 0.02],
-    ]
-  }
+  // Keep a stable distribution so idle remains dominant when not actively conversing.
+  return CATEGORY_WEIGHTS
 }
 
 /**
