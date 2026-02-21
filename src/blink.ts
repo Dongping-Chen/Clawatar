@@ -1,4 +1,4 @@
-import { state } from './main'
+import { state } from './app-state'
 
 let nextBlinkTime = 0
 let blinkPhase: 'idle' | 'closing' | 'opening' = 'idle'

@@ -1,5 +1,4 @@
 import * as THREE from 'three'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
@@ -9,7 +8,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 export let scene: THREE.Scene
 export let camera: THREE.PerspectiveCamera
 export let renderer: THREE.WebGLRenderer
-export let controls: OrbitControls
+export let controls: any
 export let clock: THREE.Clock
 export let composer: EffectComposer | null = null
 export const outlineEffect: null = null
@@ -254,7 +253,30 @@ export function setBackgroundTheme(theme: string): BackgroundThemeKey {
   return normalized
 }
 
-export function initScene(canvas: HTMLCanvasElement) {
+type InitSceneOptions = {
+  disableOrbitControls?: boolean
+}
+
+function createStaticControls() {
+  return {
+    target: new THREE.Vector3(0, 0.9, 0),
+    enabled: false,
+    enableDamping: false,
+    dampingFactor: 0,
+    minDistance: 0.3,
+    maxDistance: 8.0,
+    minPolarAngle: 0,
+    maxPolarAngle: Math.PI,
+    minAzimuthAngle: -Infinity,
+    maxAzimuthAngle: Infinity,
+    enablePan: false,
+    enableRotate: false,
+    enableZoom: false,
+    update() {},
+  }
+}
+
+export async function initScene(canvas: HTMLCanvasElement, options: InitSceneOptions = {}) {
   clock = new THREE.Clock()
   scene = new THREE.Scene()
   scene.background = null
@@ -300,13 +322,18 @@ export function initScene(canvas: HTMLCanvasElement) {
 
   // Platform circles removed — shader gradient background replaces them
 
-  controls = new OrbitControls(camera, canvas)
-  controls.target.set(0, 0.9, 0)
-  controls.enableDamping = true
-  controls.dampingFactor = 0.1
-  controls.minDistance = 0.3   // Keep a safe gap from target to avoid camera-inside-head artifacts
-  controls.maxDistance = 8.0   // Don't let camera go too far either
-  controls.update()
+  if (options.disableOrbitControls) {
+    controls = createStaticControls()
+  } else {
+    const { OrbitControls } = await import('three/examples/jsm/controls/OrbitControls.js')
+    controls = new OrbitControls(camera, canvas)
+    controls.target.set(0, 0.9, 0)
+    controls.enableDamping = true
+    controls.dampingFactor = 0.1
+    controls.minDistance = 0.3   // Keep a safe gap from target to avoid camera-inside-head artifacts
+    controls.maxDistance = 8.0   // Don't let camera go too far either
+    controls.update()
+  }
 
   setBackgroundTheme(DEFAULT_THEME)
 

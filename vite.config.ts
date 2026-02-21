@@ -44,6 +44,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
+        embed: resolve(__dirname, 'embed.html'),
         preview: resolve(__dirname, 'preview.html'),
         bgonly: resolve(__dirname, 'bgonly.html'),
       },

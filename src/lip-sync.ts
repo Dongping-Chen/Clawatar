@@ -1,4 +1,4 @@
-import { state } from './main'
+import { state } from './app-state'
 import type { VRM } from '@pixiv/three-vrm'
 
 let speaking = false

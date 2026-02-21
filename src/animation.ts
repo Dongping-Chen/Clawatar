@@ -2,7 +2,7 @@ import { createVRMAnimationClip } from '@pixiv/three-vrm-animation'
 import type { VRMAnimation } from '@pixiv/three-vrm-animation'
 import type { AnimationAction, AnimationClip } from 'three'
 import { LoopOnce, LoopRepeat, Quaternion, Vector3 } from 'three'
-import { state } from './main'
+import { state } from './app-state'
 import { loadVRMA } from './vrm-loader'
 
 const animationCache = new Map<string, VRMAnimation>()

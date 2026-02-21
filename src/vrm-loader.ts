@@ -4,7 +4,7 @@ import { VRMAnimationLoaderPlugin, VRMLookAtQuaternionProxy } from '@pixiv/three
 import type { VRM } from '@pixiv/three-vrm'
 import type { VRMAnimation } from '@pixiv/three-vrm-animation'
 import { camera, scene } from './scene'
-import { state } from './main'
+import { state } from './app-state'
 import type { VRMModelMeta } from './types'
 // outline removed — will re-add properly later
 import * as THREE from 'three'
@@ -99,6 +99,8 @@ const _eyeOffset = new THREE.Vector3()
 const _eyeAxis = new THREE.Vector3()
 const _faceUp = new THREE.Vector3()
 const _faceFront = new THREE.Vector3()
+const _query = new URLSearchParams(window.location.search)
+const _preferFixedFrontTarget = _query.has('embed') || _query.has('transparent') || _query.has('meeting')
 
 function normalizeGroundDirection(direction: THREE.Vector3): boolean {
   direction.y = 0
@@ -111,6 +113,13 @@ function normalizeGroundDirection(direction: THREE.Vector3): boolean {
 }
 
 function computeTargetFrontDirection(vrm: VRM): THREE.Vector3 | null {
+  if (_preferFixedFrontTarget) {
+    // Native/embed shells always frame the avatar from +Z looking toward origin.
+    // Keep facing normalization deterministic and independent from camera init timing.
+    _targetFront.set(0, 0, 1)
+    return _targetFront
+  }
+
   vrm.scene.getWorldPosition(_modelWorld)
   _targetFront.subVectors(camera.position, _modelWorld)
 

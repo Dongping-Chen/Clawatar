@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { camera } from './scene'
-import { state } from './main'
+import { state } from './app-state'
 import { setExpression } from './expressions'
 import { requestAction } from './action-state-machine'
 

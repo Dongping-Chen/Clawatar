@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { state } from './main'
+import { state } from './app-state'
 import { camera } from './scene'
 
 const target = new THREE.Vector3(0, 1.5, -1)

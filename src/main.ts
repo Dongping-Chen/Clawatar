@@ -22,19 +22,7 @@ import { loadRoomGLB, isSceneLoaded, getSceneWalkBounds, SCENE_LAYER, SCENE_EXPO
 import { broadcastSyncCommand } from './sync-bridge'
 import { initAmbientMusic, getMusicState, toggleMusic } from './ambient-music'
 import { initAmbienceMixer } from './ambience-mixer'
-import type { AppState } from './types'
-
-export const state: AppState = {
-  vrm: null,
-  vrmMeta: null,
-  mixer: null,
-  baseFacingYaw: 0,
-  autoBlinkEnabled: true,
-  idleAnimationsEnabled: true,
-  touchReactionsEnabled: true,
-  mouseLookEnabled: true,
-  characterState: 'idle',
-}
+import { state } from './app-state'
 
 // Debug: expose state + scene for console material inspection
 ;(window as any).__app_state = state
@@ -58,6 +46,11 @@ export const state: AppState = {
 const _hipsWorld = new THREE.Vector3()
 const _leftFootWorld = new THREE.Vector3()
 const _rightFootWorld = new THREE.Vector3()
+const _headWorld = new THREE.Vector3()
+const _leftEyeWorld = new THREE.Vector3()
+const _rightEyeWorld = new THREE.Vector3()
+const _eyeMidWorld = new THREE.Vector3()
+const _eyeOffset = new THREE.Vector3()
 let shadowGroundFootY: number | null = null
 let lastShadowAnchorPost = 0
 let lastShadowAnchorVisible = false
@@ -69,6 +62,7 @@ let hasShadowAnchorSnapshot = false
 let shadowStageActive = true
 const shadowAnchorPostIntervalMs = 33
 const shadowAnchorHeartbeatMs = 120
+let lastEmbedFacingFlipAt = -999
 
 function normalizeAngle(angle: number): number {
   let value = angle
@@ -84,6 +78,32 @@ function clampRootYawAroundBase(maxDelta: number) {
   const delta = normalizeAngle(normalizeAngle(root.rotation.y) - base)
   const clampedDelta = Math.max(-maxDelta, Math.min(maxDelta, delta))
   root.rotation.y = normalizeAngle(base + clampedDelta)
+}
+
+function enforceEmbedFrontFacing(elapsed: number) {
+  if (!(isEmbed || isTransparent || isMeeting) || !state.vrm) return
+
+  const humanoid = state.vrm.humanoid
+  const leftEye = humanoid?.getNormalizedBoneNode('leftEye')
+  const rightEye = humanoid?.getNormalizedBoneNode('rightEye')
+  const head = humanoid?.getNormalizedBoneNode('head')
+  if (!leftEye || !rightEye || !head) return
+
+  leftEye.getWorldPosition(_leftEyeWorld)
+  rightEye.getWorldPosition(_rightEyeWorld)
+  head.getWorldPosition(_headWorld)
+  _eyeMidWorld.addVectors(_leftEyeWorld, _rightEyeWorld).multiplyScalar(0.5)
+  _eyeOffset.subVectors(_eyeMidWorld, _headWorld)
+
+  // In embed/native shells, desired front is +Z in world space.
+  const eyeDepth = _eyeOffset.z
+  if (eyeDepth < -0.003 && elapsed - lastEmbedFacingFlipAt > 0.8) {
+    const root = state.vrm.scene
+    root.rotation.y = normalizeAngle(root.rotation.y + Math.PI)
+    state.baseFacingYaw = normalizeAngle(state.baseFacingYaw + Math.PI)
+    lastEmbedFacingFlipAt = elapsed
+    console.info(`[facing-guard] embed auto-flip by 180° (eyeDepth=${eyeDepth.toFixed(4)})`)
+  }
 }
 
 function showDropPrompt() {
@@ -290,9 +310,23 @@ function initMusicToggleButton() {
   document.body.appendChild(button)
 }
 
-function init() {
+function scheduleAudioEngineWarmup() {
+  const warmup = () => {
+    initAmbientMusic()
+    initAmbienceMixer()
+  }
+
+  if (typeof (window as any).requestIdleCallback === 'function') {
+    ;(window as any).requestIdleCallback(warmup, { timeout: 2500 })
+    return
+  }
+
+  window.setTimeout(warmup, 1200)
+}
+
+async function init() {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement
-  initScene(canvas)
+  await initScene(canvas)
   // Keep contact shadow on the character layer (transparent Stage WebView).
   // bgonly/background layers should never render the avatar shadow.
   const shouldRenderContactShadow = !isEmbed || isTransparent
@@ -417,8 +451,8 @@ function init() {
     enableRoomMode()
   }
   if (!isEmbed) {
-    initAmbientMusic()
-    initAmbienceMixer()
+    // Non-critical: defer audio engine setup to idle so first frame is faster.
+    scheduleAudioEngineWarmup()
   }
   if (!isEmbed && !isMeeting) {
     initMusicToggleButton()
@@ -536,16 +570,28 @@ function hideAllUI() {
       if (data.type === 'loadModel' && data.url) {
         if (isBgOnly) return
         loadVRM(data.url)
-          .then((vrm) => {
+          .then(async (vrm) => {
             vrm.scene.traverse((child) => {
               if (child instanceof THREE.Mesh) {
                 child.castShadow = true
               }
             })
             if (isEmbed) warmTintVRMMaterials()
-            return playBaseIdle(DEFAULT_BASE_IDLE_ACTION)
+            await playBaseIdle(DEFAULT_BASE_IDLE_ACTION)
+            ;(window as any).__clawatar = { vrm: true, ready: true }
+            try {
+              ;(window as any).webkit?.messageHandlers?.clawatar?.postMessage({ event: 'modelLoaded' })
+            } catch {}
           })
-          .catch(console.error)
+          .catch((error) => {
+            console.error(error)
+            try {
+              ;(window as any).webkit?.messageHandlers?.clawatar?.postMessage({
+                event: 'modelError',
+                error: String((error as any)?.message ?? error),
+              })
+            } catch {}
+          })
         return
       }
 
@@ -665,6 +711,7 @@ function animate() {
   updateRoomWallTransparency()
 
   updateLookAt()
+  enforceEmbedFrontFacing(elapsed)
 
   controls.update()
   // Absolute final camera guard: must run AFTER OrbitControls update.
@@ -719,4 +766,6 @@ function animate() {
   // alpha:true WebGLRenderer = transparent black. Emissive-only = works.
 }
 
-init()
+void init().catch((error) => {
+  console.error('[main] init failed:', error)
+})

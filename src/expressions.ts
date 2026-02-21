@@ -1,4 +1,4 @@
-import { state } from './main'
+import { state } from './app-state'
 import { broadcastSyncCommand } from './sync-bridge'
 
 interface ExpressionTarget {

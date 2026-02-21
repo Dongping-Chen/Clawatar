@@ -64,7 +64,7 @@ function animate() {
   renderer.render(scene, camera)
 }
 
-function init() {
+async function init() {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement | null
   if (!canvas) {
     throw new Error('Missing #canvas for bgonly renderer')
@@ -73,7 +73,7 @@ function init() {
   const params = new URLSearchParams(window.location.search)
   const initialTheme = params.get('theme') || 'sakura'
 
-  initScene(canvas)
+  await initScene(canvas, { disableOrbitControls: true })
   initContactShadow(false)
   initGradientBackground(scene, initialTheme)
   initBackgrounds(initialTheme)
@@ -86,4 +86,6 @@ function init() {
   animate()
 }
 
-init()
+void init().catch((error) => {
+  console.error('[bgonly] init failed:', error)
+})

@@ -1,5 +1,5 @@
 import type { CharacterState, IdleConfig } from './types'
-import { state } from './main'
+import { state } from './app-state'
 import { getActivityMode } from './activity-modes'
 import { DEFAULT_BASE_IDLE_ACTION, loadAndPlayAction, playBaseIdle, warmupAnimationCache } from './animation'
 import { setExpression, resetExpressionsImmediately } from './expressions'

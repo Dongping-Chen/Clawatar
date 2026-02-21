@@ -1,6 +1,6 @@
 import { setExpression, resetExpressions } from './expressions'
 import { requestAction } from './action-state-machine'
-import { state } from './main'
+import { state } from './app-state'
 
 type ActivityType = 'typing' | 'click' | 'mouse' | 'speech'
 

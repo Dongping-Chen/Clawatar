@@ -1,4 +1,4 @@
-import { state } from './main'
+import { state } from './app-state'
 
 let breathingEnabled = true
 let breathPhase = 0

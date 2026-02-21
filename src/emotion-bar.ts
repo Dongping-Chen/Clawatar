@@ -1,6 +1,6 @@
 import { requestAction } from './action-state-machine'
 import { setExpression } from './expressions'
-import { state } from './main'
+import { state } from './app-state'
 
 type EmotionAction = {
   expression: string
