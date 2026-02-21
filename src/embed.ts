@@ -28,6 +28,7 @@ import {
   setExpression,
   updateExpressionTransitions,
 } from './expressions'
+import { initTouchReactions, setTouchReactionsEnabled } from './touch-reactions'
 import { DEFAULT_BASE_IDLE_ACTION, loadAndPlayAction, playBaseIdle, preloadAction } from './animation'
 import { updateBreathing } from './breathing'
 import { applyThemeParticles, initBackgrounds, updateBackgroundEffects } from './backgrounds'
@@ -277,7 +278,7 @@ async function handleSyncCommand(cmd: AnyCommand) {
         state.idleAnimationsEnabled = payload.idleAnimations
       }
       if (typeof payload.touchReactions === 'boolean') {
-        state.touchReactionsEnabled = payload.touchReactions
+        setTouchReactionsEnabled(payload.touchReactions)
       }
       break
     }
@@ -538,6 +539,9 @@ async function init() {
     initGradientBackground(scene, initialTheme)
   }
   initLookAt(canvas)
+  if (!isBgOnly && isTransparent) {
+    initTouchReactions(canvas)
+  }
 
   enhanceLightingForEmbed()
   if (isTransparent) {
