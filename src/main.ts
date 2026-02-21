@@ -1,13 +1,13 @@
 import * as THREE from 'three'
-import { initScene, initContactShadow, updateContactShadow, scene, camera, renderer, controls, clock, composer, outlineEffect, warmTintVRMMaterials, setTransparentBackground } from './scene'
+import { initScene, initContactShadow, updateContactShadow, scene, camera, renderer, controls, clock, composer, outlineEffect, warmTintVRMMaterials, setTransparentBackground, setContactShadowCharacterVisible } from './scene'
 import { initLookAt, updateLookAt, setMeetingLookAt } from './look-at'
 import { updateBlink } from './blink'
 import { updateLipSync } from './lip-sync'
 import { applyExpressionOverrides, updateExpressionTransitions } from './expressions'
-import { connectWS, initChatAndVoice } from './ws-control'
+import { connectWS, initChatAndVoice, initNativeSyncReceiver } from './ws-control'
 import { initUI } from './ui'
 import { loadVRM } from './vrm-loader'
-import { playBaseIdle } from './animation'
+import { DEFAULT_BASE_IDLE_ACTION, playBaseIdle, preloadAction } from './animation'
 import { updateBreathing } from './breathing'
 import { updateStateMachine, setMeetingMode } from './action-state-machine'
 import { initTouchReactions } from './touch-reactions'
@@ -15,7 +15,7 @@ import { initReactiveIdle, updateReactiveIdle } from './reactive-idle'
 import { initEmotionBar } from './emotion-bar'
 import { initBackgrounds, updateBackgroundEffects } from './backgrounds'
 import { initGradientBackground, updateGradientBackground } from './gradient-background'
-import { initCameraPresets, updateCameraPresets } from './camera-presets'
+import { getCurrentCameraPreset, initCameraPresets, updateCameraPresets, enforceCameraSafetyShell } from './camera-presets'
 import { initRoomScene, enableRoomMode, isRoomMode, getWalkableBounds, updateRoom, clampCameraToRoom, updateRoomWallTransparency } from './room-scene'
 import { updateActivityMode } from './activity-modes'
 import { loadRoomGLB, isSceneLoaded, getSceneWalkBounds, SCENE_LAYER, SCENE_EXPOSURE, CHAR_EXPOSURE } from './scene-system'
@@ -26,7 +26,9 @@ import type { AppState } from './types'
 
 export const state: AppState = {
   vrm: null,
+  vrmMeta: null,
   mixer: null,
+  baseFacingYaw: 0,
   autoBlinkEnabled: true,
   idleAnimationsEnabled: true,
   touchReactionsEnabled: true,
@@ -43,12 +45,46 @@ export const state: AppState = {
   if (state.vrm) {
     state.vrm.scene.visible = visible
   }
+  setContactShadowCharacterVisible(visible)
+}
+
+// Native stage/chat paging state (local only).
+// When stage is inactive, stop publishing shadow anchors.
+;(window as any).__setShadowStageActive = (active: boolean) => {
+  shadowStageActive = !!active
 }
 
 // Pre-allocated vectors for render loop (avoid per-frame GC pressure)
 const _hipsWorld = new THREE.Vector3()
-const _headPos = new THREE.Vector3()
-const _pushDir = new THREE.Vector3()
+const _leftFootWorld = new THREE.Vector3()
+const _rightFootWorld = new THREE.Vector3()
+let shadowGroundFootY: number | null = null
+let lastShadowAnchorPost = 0
+let lastShadowAnchorVisible = false
+let lastShadowAnchorX = 0
+let lastShadowAnchorZ = 0
+let lastShadowAnchorLift = 0
+let lastShadowAnchorStance = 0.28
+let hasShadowAnchorSnapshot = false
+let shadowStageActive = true
+const shadowAnchorPostIntervalMs = 33
+const shadowAnchorHeartbeatMs = 120
+
+function normalizeAngle(angle: number): number {
+  let value = angle
+  while (value > Math.PI) value -= 2 * Math.PI
+  while (value < -Math.PI) value += 2 * Math.PI
+  return value
+}
+
+function clampRootYawAroundBase(maxDelta: number) {
+  const root = state.vrm?.scene
+  if (!root) return
+  const base = normalizeAngle(state.baseFacingYaw)
+  const delta = normalizeAngle(normalizeAngle(root.rotation.y) - base)
+  const clampedDelta = Math.max(-maxDelta, Math.min(maxDelta, delta))
+  root.rotation.y = normalizeAngle(base + clampedDelta)
+}
 
 function showDropPrompt() {
   let prompt = document.getElementById('model-prompt')
@@ -72,6 +108,10 @@ function hideDropPrompt() {
 ;(window as any).__hideDropPrompt = hideDropPrompt
 
 async function autoLoad() {
+  if (isBgOnly) {
+    return
+  }
+
   // Try config (fetched at runtime)
   let configModelUrl = ''
   try {
@@ -88,7 +128,12 @@ async function autoLoad() {
 
   if (modelUrl && !isBgOnly) {
     try {
+      // Only gate first paint on the base idle. Other actions warm in background.
+      const preloadBaseIdle = preloadAction(DEFAULT_BASE_IDLE_ACTION).catch((error) => {
+        console.warn('[autoLoad] idle preload failed:', error)
+      })
       const vrm = await loadVRM(modelUrl)
+      await preloadBaseIdle
       vrm.scene.traverse((child) => {
         if (child instanceof THREE.Mesh) {
           child.castShadow = true
@@ -99,10 +144,18 @@ async function autoLoad() {
       localStorage.setItem('vrm-model-url', modelUrl)
       hideDropPrompt()
       console.log('Auto-loaded model:', modelUrl)
+      await playBaseIdle(DEFAULT_BASE_IDLE_ACTION)
       // Expose to native app (iOS WKWebView)
       ;(window as any).__clawatar = { vrm: true, ready: true }
       try { (window as any).webkit?.messageHandlers?.clawatar?.postMessage({event: 'modelLoaded'}) } catch {}
-      await playBaseIdle('119_Idle')
+
+      // Warm common conversational actions after first frame is ready.
+      window.setTimeout(() => {
+        void Promise.allSettled([
+          preloadAction('86_Talking'),
+          preloadAction('88_Thinking'),
+        ])
+      }, 250)
 
       // Auto-load room GLB if ?room= param is set
       const roomParam = params.get('room')
@@ -132,7 +185,65 @@ const isEmbed = params.has('embed')
 const isMeeting = params.has('meeting')
 const isTransparent = params.has('transparent')
 const isBgOnly = params.has('bgonly')
+const disableAutoLoad = params.has('noautoload')
+const isFreePreview = params.has('freepreview')
 const initialTheme = params.get('theme') || 'sakura'
+
+function postLocalShadowAnchor(payload: {
+  x: number
+  z: number
+  lift: number
+  stance: number
+  visible: boolean
+}) {
+  try {
+    ;(window as any).webkit?.messageHandlers?.clawatar?.postMessage({
+      type: 'sync',
+      category: 'shadow_anchor',
+      payload,
+      ts: Date.now(),
+    })
+  } catch {}
+}
+
+function syncShadowAnchorFromStage(payload: {
+  x: number
+  z: number
+  lift: number
+  stance: number
+  visible: boolean
+}) {
+  if (!isTransparent) return
+
+  const now = performance.now()
+  const visibilityChanged = payload.visible !== lastShadowAnchorVisible
+  const anchorChanged = !hasShadowAnchorSnapshot
+    || Math.abs(payload.x - lastShadowAnchorX) > 0.002
+    || Math.abs(payload.z - lastShadowAnchorZ) > 0.002
+    || Math.abs(payload.lift - lastShadowAnchorLift) > 0.002
+    || Math.abs(payload.stance - lastShadowAnchorStance) > 0.003
+  const minInterval = visibilityChanged || anchorChanged
+    ? shadowAnchorPostIntervalMs
+    : shadowAnchorHeartbeatMs
+  if (now - lastShadowAnchorPost < minInterval) {
+    return
+  }
+  lastShadowAnchorPost = now
+  lastShadowAnchorVisible = payload.visible
+  lastShadowAnchorX = payload.x
+  lastShadowAnchorZ = payload.z
+  lastShadowAnchorLift = payload.lift
+  lastShadowAnchorStance = payload.stance
+  hasShadowAnchorSnapshot = true
+
+  postLocalShadowAnchor({
+    x: Number(payload.x.toFixed(4)),
+    z: Number(payload.z.toFixed(4)),
+    lift: Number(payload.lift.toFixed(4)),
+    stance: Number(payload.stance.toFixed(4)),
+    visible: payload.visible,
+  })
+}
 
 function initMusicToggleButton() {
   const button = document.createElement('button')
@@ -182,7 +293,10 @@ function initMusicToggleButton() {
 function init() {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement
   initScene(canvas)
-  initContactShadow(isTransparent)
+  // Keep contact shadow on the character layer (transparent Stage WebView).
+  // bgonly/background layers should never render the avatar shadow.
+  const shouldRenderContactShadow = !isEmbed || isTransparent
+  initContactShadow(shouldRenderContactShadow)
   if (!isTransparent) {
     initGradientBackground(scene, initialTheme)
   }
@@ -208,9 +322,24 @@ function init() {
       m.camera.position.set(0, 1.2, 3.0)
       m.controls.target.set(0, 0.9, 0)
       m.controls.update()
-      m.controls.enableRotate = false
-      m.controls.enablePan = false
-      m.controls.enableZoom = false
+      if (isFreePreview) {
+        // Free preview mode (for avatar-browser): allow orbit/pan/zoom.
+        // Keep fixed full-body preset so camera is not auto-overridden by tracking presets.
+        m.controls.enableRotate = true
+        m.controls.enablePan = true
+        m.controls.enableZoom = true
+        m.controls.minDistance = 1.1
+        m.controls.maxDistance = 7.0
+        m.controls.minPolarAngle = 0.1
+        m.controls.maxPolarAngle = Math.PI - 0.1
+        import('./camera-presets')
+          .then(cp => cp.setCameraPreset('full', 0))
+          .catch(console.error)
+      } else {
+        m.controls.enableRotate = false
+        m.controls.enablePan = false
+        m.controls.enableZoom = false
+      }
     } else if (isMeeting) {
       // Meeting mode: hide UI, keep room, head-tracking camera, lock eyes to camera
       m.enhanceLightingForWeb()
@@ -271,27 +400,39 @@ function init() {
     setMeetingLookAt(true)
   }
 
-  if (!isMeeting) {
+  if (!isMeeting && !isBgOnly) {
     initTouchReactions(canvas)
     initReactiveIdle(canvas)
     initEmotionBar()
   }
   initBackgrounds(initialTheme)
-  initCameraPresets()
-  initRoomScene()
+  if (!isBgOnly) {
+    initCameraPresets()
+  }
+  if (!isEmbed) {
+    initRoomScene()
+  }
   if (!isEmbed) {
     // Enable room mode by default for web and meeting
     enableRoomMode()
   }
-  initAmbientMusic()
-  initAmbienceMixer()
+  if (!isEmbed) {
+    initAmbientMusic()
+    initAmbienceMixer()
+  }
   if (!isEmbed && !isMeeting) {
     initMusicToggleButton()
   }
 
-  initChatAndVoice()
-  connectWS()
-  autoLoad()
+  if (isEmbed) {
+    initNativeSyncReceiver()
+  } else {
+    initChatAndVoice()
+    connectWS()
+  }
+  if (!disableAutoLoad) {
+    autoLoad()
+  }
 
   // ═══ KEYBOARD SHORTCUTS for scene switching (works in ALL modes incl. embed/meeting) ═══
   const ROOM_KEYS: Record<string, string> = {
@@ -393,6 +534,7 @@ function hideAllUI() {
       if (!data || typeof data !== 'object') return
 
       if (data.type === 'loadModel' && data.url) {
+        if (isBgOnly) return
         loadVRM(data.url)
           .then((vrm) => {
             vrm.scene.traverse((child) => {
@@ -401,7 +543,7 @@ function hideAllUI() {
               }
             })
             if (isEmbed) warmTintVRMMaterials()
-            return playBaseIdle('119_Idle')
+            return playBaseIdle(DEFAULT_BASE_IDLE_ACTION)
           })
           .catch(console.error)
         return
@@ -414,7 +556,17 @@ function hideAllUI() {
 
       if (data.type === 'set_camera_preset') {
         import('./camera-presets')
-          .then(m => m.setCameraPreset(data.preset ?? 'full', data.duration))
+          .then(m => {
+            const preset = data.preset ?? 'portrait'
+            m.setCameraPreset(preset, data.duration)
+            if (typeof data.distance === 'number' || typeof data.height === 'number') {
+              m.adjustPresetOffset(
+                preset,
+                typeof data.distance === 'number' ? data.distance : 1.0,
+                typeof data.height === 'number' ? data.height : 0,
+              )
+            }
+          })
           .catch(console.error)
         return
       }
@@ -482,23 +634,24 @@ function animate() {
 
     // Clamp VRM root Y rotation (strict ±45° in room mode)
     {
-      const root = state.vrm.scene
-      let ry = root.rotation.y
-      while (ry > Math.PI) ry -= 2 * Math.PI
-      while (ry < -Math.PI) ry += 2 * Math.PI
-      const MAX_YAW = Math.PI / 4
-      root.rotation.y = Math.max(-MAX_YAW, Math.min(MAX_YAW, ry))
+      clampRootYawAroundBase(Math.PI / 4)
     }
   }
 
-  // GLOBAL: Clamp VRM root Y rotation (lenient ±90°) — prevent 180° rotation in ALL modes
+  if (state.vrm && (isEmbed || isTransparent || isMeeting)) {
+    const hipsBone = state.vrm.humanoid?.getNormalizedBoneNode('hips')
+    if (hipsBone) {
+      const localRot = hipsBone.rotation.y
+      const maxHipsYaw = Math.PI / 6
+      hipsBone.rotation.y = Math.max(-maxHipsYaw, Math.min(maxHipsYaw, localRot))
+    }
+  }
+
+  // GLOBAL: Clamp root yaw around each model's baseline facing.
+  // Embed/meeting keep tighter front-facing bounds than free web mode.
   if (state.vrm) {
-    const root = state.vrm.scene
-    let ry = root.rotation.y
-    while (ry > Math.PI) ry -= 2 * Math.PI
-    while (ry < -Math.PI) ry += 2 * Math.PI
-    const MAX_YAW = Math.PI / 2
-    root.rotation.y = Math.max(-MAX_YAW, Math.min(MAX_YAW, ry))
+    const MAX_YAW = (isEmbed || isTransparent || isMeeting) ? (Math.PI / 6) : (Math.PI / 2)
+    clampRootYawAroundBase(MAX_YAW)
   }
 
   updateStateMachine(elapsed)
@@ -511,30 +664,49 @@ function animate() {
   clampCameraToRoom()
   updateRoomWallTransparency()
 
-  // GLOBAL safety: prevent head from clipping through camera in ANY mode
-  // This runs EVERY FRAME as the absolute last guard before render
-  if (state.vrm) {
-    const headBone = state.vrm.humanoid?.getNormalizedBoneNode('head')
-    if (headBone) {
-      headBone.getWorldPosition(_headPos)
-      _pushDir.copy(_headPos).sub(camera.position)
-      const dist = _pushDir.length()
-      const minSafeDist = 1.5
-      if (dist < minSafeDist) {
-        _pushDir.normalize().multiplyScalar(-(minSafeDist - dist))
-        camera.position.add(_pushDir)
-      }
-    }
-  }
-
-
   updateLookAt()
 
   controls.update()
+  // Absolute final camera guard: must run AFTER OrbitControls update.
+  enforceCameraSafetyShell()
 
   // Single-pass rendering: scene GLB emissive is pre-dimmed in loadRoomGLB.
   // Use composer (with bloom) for ALL modes — character gets glow effect.
-  updateContactShadow(state.vrm?.scene ?? null)
+  // Stylized blob shadow is still real-time: it responds to jump height and stance width.
+  let shadowLift = 0
+  let shadowStance = 0.28
+  if (state.vrm) {
+    shadowLift = Math.max(0, state.vrm.scene.position.y)
+    const humanoid = state.vrm.humanoid
+    const leftFoot = humanoid?.getNormalizedBoneNode('leftFoot')
+    const rightFoot = humanoid?.getNormalizedBoneNode('rightFoot')
+    if (leftFoot && rightFoot) {
+      leftFoot.getWorldPosition(_leftFootWorld)
+      rightFoot.getWorldPosition(_rightFootWorld)
+      const minFootY = Math.min(_leftFootWorld.y, _rightFootWorld.y)
+      if (shadowGroundFootY == null) {
+        shadowGroundFootY = minFootY
+      }
+      if (minFootY < shadowGroundFootY) {
+        shadowGroundFootY = minFootY
+      } else {
+        // Slow upward adaptation so "ground baseline" stays stable but can recover after scene changes.
+        shadowGroundFootY += (minFootY - shadowGroundFootY) * 0.02
+      }
+      shadowLift = Math.max(shadowLift, Math.max(0, minFootY - shadowGroundFootY))
+      shadowStance = Math.hypot(
+        _leftFootWorld.x - _rightFootWorld.x,
+        _leftFootWorld.z - _rightFootWorld.z
+      )
+    }
+  } else {
+    shadowGroundFootY = null
+  }
+  const shadowAllowedForPreset = getCurrentCameraPreset() === 'full'
+  updateContactShadow(
+    shadowAllowedForPreset ? (state.vrm?.scene ?? null) : null,
+    (shadowAllowedForPreset && state.vrm) ? { lift: shadowLift, stance: shadowStance } : undefined
+  )
 
   if (composer) {
     composer.render()

@@ -9,6 +9,7 @@ interface ExpressionTarget {
 
 const expressionTargets: Map<string, ExpressionTarget> = new Map()
 const DEFAULT_SPEED = 3.0
+const missingExpressionWarnings = new Set<string>()
 
 interface SetExpressionOptions {
   sync?: boolean
@@ -16,6 +17,18 @@ interface SetExpressionOptions {
 
 interface ResetExpressionOptions {
   immediate?: boolean
+}
+
+function hasExpression(name: string): boolean {
+  const manager = state.vrm?.expressionManager
+  if (!manager) return false
+  return manager.getExpression(name) != null
+}
+
+function warnMissingExpression(name: string) {
+  if (missingExpressionWarnings.has(name)) return
+  missingExpressionWarnings.add(name)
+  console.warn(`[expression] Model does not define expression "${name}", skipping.`)
 }
 
 export function setExpression(
@@ -52,7 +65,9 @@ export function resetExpressions(speed: number = DEFAULT_SPEED, options: ResetEx
 
   if (options.immediate) {
     for (const name of expressionTargets.keys()) {
-      vrm?.expressionManager?.setValue(name, 0)
+      if (hasExpression(name)) {
+        vrm?.expressionManager?.setValue(name, 0)
+      }
     }
 
     expressionTargets.clear()
@@ -88,7 +103,11 @@ export function updateExpressionTransitions(delta: number) {
 
   for (const name of toDelete) {
     expressionTargets.delete(name)
-    vrm.expressionManager.setValue(name, 0)
+    if (hasExpression(name)) {
+      vrm.expressionManager.setValue(name, 0)
+    } else {
+      warnMissingExpression(name)
+    }
   }
 }
 
@@ -100,8 +119,19 @@ export function applyExpressionOverrides() {
   const { vrm } = state
   if (!vrm?.expressionManager) return
 
+  const toDelete: string[] = []
   for (const [name, entry] of expressionTargets) {
-    vrm.expressionManager.setValue(name, entry.current)
+    if (hasExpression(name)) {
+      vrm.expressionManager.setValue(name, entry.current)
+      continue
+    }
+
+    warnMissingExpression(name)
+    toDelete.push(name)
+  }
+
+  for (const name of toDelete) {
+    expressionTargets.delete(name)
   }
 }
 

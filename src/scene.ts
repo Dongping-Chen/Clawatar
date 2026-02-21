@@ -37,53 +37,95 @@ type ThemeGradient = {
   bottom: ThemeRGB
 }
 
-let contactShadowBlob: THREE.Mesh | null = null
-
-function createBlobShadowTexture(): THREE.CanvasTexture {
-  const shadowCanvas = document.createElement('canvas')
-  shadowCanvas.width = 256
-  shadowCanvas.height = 256
-
-  const ctx = shadowCanvas.getContext('2d')
-  if (!ctx) {
-    throw new Error('Failed to create blob shadow 2D context')
-  }
-
-  const grad = ctx.createRadialGradient(128, 128, 0, 128, 128, 128)
-  grad.addColorStop(0.0, 'rgba(0,0,0,0.35)')
-  grad.addColorStop(0.35, 'rgba(0,0,0,0.20)')
-  grad.addColorStop(0.75, 'rgba(0,0,0,0.07)')
-  grad.addColorStop(1.0, 'rgba(0,0,0,0)')
-
-  ctx.clearRect(0, 0, 256, 256)
-  ctx.fillStyle = grad
-  ctx.fillRect(0, 0, 256, 256)
-
-  const texture = new THREE.CanvasTexture(shadowCanvas)
-  texture.colorSpace = THREE.SRGBColorSpace
-  texture.needsUpdate = true
-  return texture
+export type ContactShadowDynamics = {
+  lift?: number
+  stance?: number
 }
 
-function ensureBlobShadow() {
-  if (contactShadowBlob) return
+export type ContactShadowAnchor = {
+  x: number
+  z: number
+  lift?: number
+  stance?: number
+  visible?: boolean
+}
 
-  const shadowGeo = new THREE.PlaneGeometry(0.8, 0.4)
-  const shadowMat = new THREE.MeshBasicMaterial({
-    map: createBlobShadowTexture(),
-    transparent: true,
-    depthWrite: false,
-    toneMapped: false,
-    side: THREE.DoubleSide,
-  })
+let contactShadowReceiver: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> | null = null
+let contactShadowEnabled = false
+let contactShadowRuntimeEnabled = true
+let contactShadowCharacterVisible = true
+let contactShadowBaseOpacity = 0.34
+let contactShadowExternalAnchor: ContactShadowAnchor | null = null
+let contactShadowExternalAnchorTs = 0
+const topDownShadowHeight = 4.8
+const contactShadowExternalAnchorTTL = 260
 
-  contactShadowBlob = new THREE.Mesh(shadowGeo, shadowMat)
-  contactShadowBlob.name = 'contact-shadow-blob'
-  contactShadowBlob.rotation.x = -Math.PI / 2
-  contactShadowBlob.position.set(0, 0.005, 0)
-  contactShadowBlob.visible = false
-  contactShadowBlob.renderOrder = 1
-  scene.add(contactShadowBlob)
+function configureKeyLightShadowCasting() {
+  if (!lightingRig?.key) return
+
+  const key = lightingRig.key
+  // Stylized mode: disable geometry-accurate cast shadow to avoid human-shape outlines.
+  key.castShadow = false
+}
+
+function ensureContactShadowReceiver() {
+  if (contactShadowReceiver) return
+
+  const shadowCanvas = document.createElement('canvas')
+  shadowCanvas.width = 512
+  shadowCanvas.height = 512
+  const ctx = shadowCanvas.getContext('2d')
+  if (!ctx) {
+    throw new Error('Failed to create stylized shadow texture context')
+  }
+
+  const center = 256
+  const radius = 256
+  const grad = ctx.createRadialGradient(center, center, 0, center, center, radius)
+  // Center dark, outer smooth fade for a "puffed" soft blob look.
+  grad.addColorStop(0.0, 'rgba(0, 0, 0, 0.82)')
+  grad.addColorStop(0.2, 'rgba(0, 0, 0, 0.58)')
+  grad.addColorStop(0.45, 'rgba(0, 0, 0, 0.30)')
+  grad.addColorStop(0.72, 'rgba(0, 0, 0, 0.10)')
+  grad.addColorStop(1.0, 'rgba(0, 0, 0, 0.0)')
+  ctx.clearRect(0, 0, shadowCanvas.width, shadowCanvas.height)
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, shadowCanvas.width, shadowCanvas.height)
+
+  const shadowTexture = new THREE.CanvasTexture(shadowCanvas)
+  shadowTexture.colorSpace = THREE.SRGBColorSpace
+  shadowTexture.minFilter = THREE.LinearFilter
+  shadowTexture.magFilter = THREE.LinearFilter
+  shadowTexture.needsUpdate = true
+
+  const receiver = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.35, 0.74),
+    new THREE.MeshBasicMaterial({
+      map: shadowTexture,
+      transparent: true,
+      depthWrite: false,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+      opacity: 0.32,
+    })
+  )
+  receiver.name = 'shadow-receiver'
+  receiver.rotation.x = -Math.PI / 2
+  receiver.position.set(0, 0.001, 0)
+  receiver.receiveShadow = false
+  receiver.frustumCulled = false
+  receiver.renderOrder = 1
+  receiver.visible = false
+  receiver.material.depthWrite = false
+
+  contactShadowReceiver = receiver
+  scene.add(receiver)
+}
+
+function setContactShadowOpacity(opacity: number) {
+  contactShadowBaseOpacity = opacity
+  if (!contactShadowReceiver) return
+  contactShadowReceiver.material.opacity = opacity
 }
 
 const BACKGROUND_THEMES: Record<BackgroundThemeKey, ThemeGradient> = {
@@ -239,7 +281,8 @@ export function initScene(canvas: HTMLCanvasElement) {
 
   const key = new THREE.DirectionalLight(0xffd7e7, 1.2)
   key.name = 'key-light'
-  key.position.set(0.3, 8.0, 2.0)
+  key.position.set(0, 5.8, 0.001)
+  key.target.position.set(0, 0.95, 0)
   scene.add(key)
 
   const rim = new THREE.DirectionalLight(0xf6d7ff, 0.48)
@@ -253,6 +296,7 @@ export function initScene(canvas: HTMLCanvasElement) {
   scene.add(bounce)
 
   lightingRig = { ambient, skyFill, key, rim, bounce }
+  configureKeyLightShadowCasting()
 
   // Platform circles removed — shader gradient background replaces them
 
@@ -274,19 +318,111 @@ export function initScene(canvas: HTMLCanvasElement) {
 }
 
 export function initContactShadow(enabled: boolean) {
-  ensureBlobShadow()
-  if (contactShadowBlob) {
-    contactShadowBlob.visible = enabled
+  contactShadowEnabled = enabled
+  if (!enabled) {
+    if (contactShadowReceiver) {
+      contactShadowReceiver.visible = false
+      contactShadowReceiver.scale.set(1, 1, 1)
+    }
+    return
+  }
+
+  ensureContactShadowReceiver()
+  configureKeyLightShadowCasting()
+  if (contactShadowReceiver) {
+    contactShadowReceiver.visible = false
+    contactShadowReceiver.scale.set(1, 1, 1)
+    contactShadowReceiver.material.opacity = contactShadowBaseOpacity
   }
 }
 
-export function updateContactShadow(vrmRoot?: THREE.Object3D | null) {
-  if (!contactShadowBlob || !contactShadowBlob.visible) return
+export function updateContactShadow(vrmRoot?: THREE.Object3D | null, dynamics?: ContactShadowDynamics) {
+  if (!contactShadowReceiver) return
 
-  if (vrmRoot) {
-    contactShadowBlob.position.x = vrmRoot.position.x
-    contactShadowBlob.position.z = vrmRoot.position.z
+  if (
+    contactShadowExternalAnchor &&
+    performance.now() - contactShadowExternalAnchorTs > contactShadowExternalAnchorTTL
+  ) {
+    contactShadowExternalAnchor = null
   }
+
+  const hasLocalTarget = contactShadowCharacterVisible && !!vrmRoot
+  const hasExternalTarget = !hasLocalTarget && !!contactShadowExternalAnchor
+  const shouldShow = contactShadowEnabled && contactShadowRuntimeEnabled && (hasLocalTarget || hasExternalTarget)
+  contactShadowReceiver.visible = shouldShow
+  if (!shouldShow) {
+    contactShadowReceiver.scale.set(1, 1, 1)
+    return
+  }
+
+  const targetX = hasLocalTarget ? vrmRoot!.position.x : (contactShadowExternalAnchor?.x ?? 0)
+  const targetZ = hasLocalTarget ? vrmRoot!.position.z : (contactShadowExternalAnchor?.z ?? 0)
+  const liftInput = hasLocalTarget
+    ? (dynamics?.lift ?? 0)
+    : (contactShadowExternalAnchor?.lift ?? 0)
+  const targetY = hasLocalTarget
+    ? vrmRoot!.position.y + 0.95
+    : (0.95 + THREE.MathUtils.clamp(liftInput * 0.2, 0, 0.16))
+
+  contactShadowReceiver.position.x = targetX
+  contactShadowReceiver.position.z = targetZ
+
+  // Real-time stylized dynamics: jump higher => bigger and lighter blob.
+  const lift = Math.max(0, liftInput)
+  const stanceInput = hasLocalTarget
+    ? (dynamics?.stance ?? 0.28)
+    : (contactShadowExternalAnchor?.stance ?? 0.28)
+  const stance = Math.max(0.2, stanceInput)
+  const liftNorm = THREE.MathUtils.clamp(lift / 0.45, 0, 1)
+  const stanceNorm = THREE.MathUtils.clamp((stance - 0.24) / 0.45, 0, 1)
+  const scaleX = 1.0 + liftNorm * 0.28 + stanceNorm * 0.06
+  const scaleZ = 1.0 + liftNorm * 0.22 + stanceNorm * 0.08
+  contactShadowReceiver.scale.set(scaleX, 1, scaleZ)
+  contactShadowReceiver.material.opacity = THREE.MathUtils.clamp(
+    contactShadowBaseOpacity * (1 - liftNorm * 0.72),
+    0.06,
+    contactShadowBaseOpacity
+  )
+
+  const key = lightingRig.key
+  key.target.position.set(targetX, targetY, targetZ)
+  key.position.set(
+    targetX,
+    targetY + topDownShadowHeight,
+    targetZ + 0.001
+  )
+  key.target.updateMatrixWorld()
+}
+
+export function setContactShadowCharacterVisible(visible: boolean) {
+  contactShadowCharacterVisible = visible
+  if (!visible && contactShadowReceiver) {
+    contactShadowReceiver.visible = false
+  }
+}
+
+export function setContactShadowRuntimeEnabled(enabled: boolean) {
+  contactShadowRuntimeEnabled = enabled
+  if (!enabled && contactShadowReceiver) {
+    contactShadowReceiver.visible = false
+    contactShadowReceiver.scale.set(1, 1, 1)
+  }
+}
+
+export function setContactShadowExternalAnchor(anchor: ContactShadowAnchor | null) {
+  if (!anchor || anchor.visible === false || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.z)) {
+    contactShadowExternalAnchor = null
+    return
+  }
+
+  contactShadowExternalAnchor = {
+    x: anchor.x,
+    z: anchor.z,
+    lift: Number.isFinite(anchor.lift) ? Math.max(0, anchor.lift ?? 0) : undefined,
+    stance: Number.isFinite(anchor.stance) ? Math.max(0.2, anchor.stance ?? 0.28) : undefined,
+    visible: true,
+  }
+  contactShadowExternalAnchorTs = performance.now()
 }
 
 export function setTransparentBackground(transparent: boolean) {
@@ -374,8 +510,9 @@ export function enhanceLightingForEmbed() {
   lightingRig.ambient.color.set(0xffe0c8)
 
   // 3) Key light — strong warm white
-  lightingRig.key.position.set(2, 3, 2)
-  lightingRig.key.intensity = 3.5
+  lightingRig.key.position.set(0, 5.8, 0.001)
+  lightingRig.key.target.position.set(0, 0.95, 0)
+  lightingRig.key.intensity = 2.4
   lightingRig.key.color.set(0xfff5e6)
 
   // 4) Fill light — softer opposite side
@@ -443,6 +580,8 @@ export function enhanceLightingForEmbed() {
   // AgX tone mapping for warm color preservation
   renderer.toneMapping = THREE.AgXToneMapping
   renderer.toneMappingExposure = 1.65
+  configureKeyLightShadowCasting()
+  setContactShadowOpacity(0.42)
 }
 
 /**
@@ -501,8 +640,9 @@ export function enhanceLightingForWeb() {
   lightingRig.skyFill.groundColor.set(0xd8c8e8)
 
   // 3. Key light — strong but not blow-out
-  lightingRig.key.position.set(0.3, 8.0, 2.0)
-  lightingRig.key.intensity = 1.4
+  lightingRig.key.position.set(0, 5.8, 0.001)
+  lightingRig.key.target.position.set(0, 0.95, 0)
+  lightingRig.key.intensity = 1.1
   lightingRig.key.color.set(0xfff6f2)
 
   // 4. Face fill
@@ -549,4 +689,6 @@ export function enhanceLightingForWeb() {
 
   // Moderate exposure — don't blow out against solid bg
   renderer.toneMappingExposure = 1.06
+  configureKeyLightShadowCasting()
+  setContactShadowOpacity(0.34)
 }

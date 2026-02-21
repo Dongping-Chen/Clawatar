@@ -709,7 +709,8 @@ Critical rules:
 2. NO markdown (**bold**, # headers, | tables, \`code\`, - bullets). TTS reads these literally and it sounds terrible.
 3. Keep it SHORT — 2-4 sentences max unless asked for detail. This is a conversation, not an essay.
 4. Speak naturally, like talking to a friend. No emoji, no URLs.
-5. Use your multimodal memory to be proactive — if you notice something changed or remember a preference, mention it naturally.`
+5. Use your multimodal memory to be proactive — if you notice something changed or remember a preference, mention it naturally.
+6. Never tell users to manually send WebSocket/gateway JSON commands. If they ask for device speech routing, treat it as an execution request.`
 
 /**
  * Build voice system prompt with dynamic multimodal memory context.
@@ -816,6 +817,206 @@ function pickAction(text: string): { action_id: string, expression: string, expr
   if (lower.match(/\b(shrug|dunno|idk|whatever)\b/)) return { action_id: '145_Shrugging', expression: 'neutral', expression_weight: 0.5 }
   // Default: talking gesture
   return { action_id: '86_Talking', expression: 'happy', expression_weight: 0.5 }
+}
+
+type RelaySpeakType = 'speak' | 'speak_audio' | 'tts_audio'
+
+interface DirectRelaySpeakCommand {
+  type: RelaySpeakType
+  text: string
+  targets: string[]
+}
+
+interface DirectRelayDispatchResult {
+  command: DirectRelaySpeakCommand
+  resolvedType: RelaySpeakType
+}
+
+function normalizeRouteTarget(raw: string): string | null {
+  const token = raw.trim().toLowerCase()
+  if (!token) return null
+
+  const aliases: Record<string, string> = {
+    iphone: 'iphone',
+    ipad: 'ipad',
+    ios: 'ios',
+    mobile: 'mobile',
+    mac: 'mac',
+    macos: 'macos',
+    macbook: 'macbook',
+    desktop: 'desktop',
+    watch: 'watch',
+    watchos: 'watchos',
+    applewatch: 'applewatch',
+    wearable: 'wearable',
+    meeting: 'meeting',
+    all: 'all',
+    any: 'all',
+    everyone: 'all',
+    broadcast: 'all',
+    '*': 'all',
+  }
+  if (aliases[token]) return aliases[token]
+
+  // Allow explicit device IDs like ios-xxxx / web-xxxx / custom IDs.
+  if (/^[a-z0-9._:-]{1,128}$/i.test(token)) {
+    return token
+  }
+  return null
+}
+
+function extractQuotedText(input: string): string | null {
+  const patterns = [
+    /"([^"]+)"/,
+    /“([^”]+)”/,
+    /'([^']+)'/,
+    /‘([^’]+)’/,
+    /「([^」]+)」/,
+  ]
+  for (const pattern of patterns) {
+    const match = input.match(pattern)
+    if (match?.[1]?.trim()) {
+      return match[1].trim()
+    }
+  }
+  return null
+}
+
+function parseDirectRelaySpeakCommand(input: string): DirectRelaySpeakCommand | null {
+  const text = input.trim()
+  if (!text) return null
+
+  const explicitCommand = /^\/(?:relay_?speak|gateway_?speak)\b/i.test(text)
+  const hasDispatchIntent = /(send|dispatch|push|发|发送|下发|推送)/i.test(text)
+  const hasTransportHint = /(gateway|relay|websocket|ws|后端)/i.test(text)
+  const hasSpeakHint = /(speak_audio|tts_audio|\bspeak\b|语音|说话|朗读)/i.test(text)
+
+  if (!explicitCommand && !(hasDispatchIntent && hasTransportHint && hasSpeakHint)) {
+    return null
+  }
+
+  let type: RelaySpeakType = 'speak'
+  if (/tts_audio/i.test(text)) type = 'tts_audio'
+  else if (/speak_audio/i.test(text)) type = 'speak_audio'
+
+  const targets: string[] = []
+
+  // Parse explicit targets=.../devices=... without swallowing the next key (e.g. text=...).
+  // Examples:
+  //   targets=iphone
+  //   targets=iphone,ipad,mac
+  //   devices=ios
+  const targetsArg = text.match(
+    /(?:targets?|devices?)\s*[=:]\s*([a-z0-9._:*\-]+(?:\s*[,;]\s*[a-z0-9._:*\-]+)*)/i,
+  )?.[1]
+  if (targetsArg) {
+    for (const item of targetsArg.split(/[,\s;]+/)) {
+      const normalized = normalizeRouteTarget(item)
+      if (normalized) targets.push(normalized)
+    }
+  } else {
+    const namedTargets: Array<[RegExp, string]> = [
+      [/\biphone\b/i, 'iphone'],
+      [/\bipad\b/i, 'ipad'],
+      [/\bios\b/i, 'ios'],
+      [/\bmacos\b/i, 'macos'],
+      [/\bmacbook\b/i, 'macbook'],
+      [/\bmac\b/i, 'mac'],
+      [/\bwatchos\b/i, 'watchos'],
+      [/\bapple\s*watch\b/i, 'applewatch'],
+      [/\bwatch\b/i, 'watch'],
+      [/\bmeeting\b/i, 'meeting'],
+      [/\b(all|broadcast|everyone|any)\b/i, 'all'],
+      [/(全部|所有|全体)/, 'all'],
+    ]
+    for (const [pattern, target] of namedTargets) {
+      if (pattern.test(text)) {
+        targets.push(target)
+      }
+    }
+  }
+
+  let commandText = text.match(/(?:text|content|内容)\s*[=:]\s*(.+)$/i)?.[1]?.trim() || ''
+  if (!commandText) {
+    commandText = extractQuotedText(text) || ''
+  }
+  if (!commandText) {
+    const colonIndex = text.search(/[:：]/)
+    if (colonIndex >= 0 && colonIndex < text.length - 1) {
+      commandText = text.slice(colonIndex + 1).trim()
+    }
+  }
+  if (!commandText) {
+    return null
+  }
+
+  commandText = commandText.replace(/^["“'‘「]+|["”'’」]+$/g, '').trim()
+  if (!commandText) {
+    return null
+  }
+
+  const uniqueTargets = Array.from(new Set(targets.map(normalizeRouteTarget).filter((v): v is string => !!v)))
+  return {
+    type,
+    text: commandText,
+    targets: uniqueTargets,
+  }
+}
+
+function hasExplicitRoutingFields(msg: Record<string, any>): boolean {
+  return (
+    msg.audio_device !== undefined
+    || msg.audio_devices !== undefined
+    || msg.target_device !== undefined
+    || msg.target_devices !== undefined
+    || msg.reply_device !== undefined
+    || msg.request_device !== undefined
+  )
+}
+
+async function dispatchDirectRelaySpeakCommand(
+  command: DirectRelaySpeakCommand,
+  broadcast: (msg: Record<string, any>) => void,
+): Promise<DirectRelayDispatchResult> {
+  const { action_id, expression, expression_weight } = pickAction(command.text)
+  const payload: Record<string, any> = {
+    type: command.type,
+    text: command.text,
+    action_id,
+    expression,
+    expression_weight,
+  }
+
+  let resolvedType: RelaySpeakType = command.type
+  if (command.type === 'speak_audio' || command.type === 'tts_audio') {
+    try {
+      payload.audio_url = await generateTTS(command.text)
+    } catch (error: any) {
+      // Gracefully degrade to text-only speak if TTS fails.
+      resolvedType = 'speak'
+      payload.type = 'speak'
+      console.error(`[direct-relay] TTS failed, falling back to speak: ${error?.message || error}`)
+    }
+  }
+
+  const explicitTargets = command.targets.filter((target) => target !== 'all')
+  const wantsBroadcast = command.targets.includes('all')
+  if (!wantsBroadcast) {
+    if (explicitTargets.length === 1) {
+      payload.audio_device = explicitTargets[0]
+    } else if (explicitTargets.length > 1) {
+      payload.audio_devices = explicitTargets
+    }
+  }
+
+  broadcast(payload)
+  return { command, resolvedType }
+}
+
+function summarizeRouteTargets(targets: string[]): string {
+  if (targets.length === 0) return 'current device'
+  if (targets.includes('all')) return 'all devices'
+  return targets.join(', ')
 }
 
 async function askOpenClaw(userText: string): Promise<string> {
@@ -985,10 +1186,56 @@ async function handleUserSpeech(text: string, senderWs: WebSocket, sourceDevice?
 
   // Broadcast helper
   const broadcast = (msg: any) => {
-    if (audioDevice) msg.audio_device = audioDevice
+    if (audioDevice && !hasExplicitRoutingFields(msg)) msg.audio_device = audioDevice
     const str = JSON.stringify(msg)
     for (const client of clients) {
       if (client.readyState === WebSocket.OPEN) client.send(str)
+    }
+  }
+
+  // Fast-path: direct relay command dispatch (without round-tripping through agent).
+  const directCommand = parseDirectRelaySpeakCommand(text)
+  if (directCommand) {
+    const commandStart = Date.now()
+    try {
+      const dispatchResult = await dispatchDirectRelaySpeakCommand(directCommand, broadcast)
+      const targetSummary = summarizeRouteTargets(directCommand.targets)
+      console.log(
+        `[direct-relay] dispatched ${dispatchResult.resolvedType} to ${targetSummary} in ${Date.now() - commandStart}ms`,
+      )
+
+      if (audioDevice) {
+        const ackText = `Done. Sent to ${targetSummary}.`
+        const ackPayload: Record<string, any> = {
+          type: 'speak',
+          text: ackText,
+          action_id: '161_Waving',
+          expression: 'happy',
+          expression_weight: 0.55,
+          audio_device: audioDevice,
+        }
+        try {
+          ackPayload.type = 'speak_audio'
+          ackPayload.audio_url = await generateTTS(ackText)
+        } catch {
+          ackPayload.type = 'speak'
+          delete ackPayload.audio_url
+        }
+        broadcast(ackPayload)
+      }
+
+      return
+    } catch (error: any) {
+      console.error(`[direct-relay] failed: ${error?.message || error}`)
+      broadcast({
+        type: 'speak',
+        text: 'I could not dispatch that relay speak command.',
+        action_id: '88_Thinking',
+        expression: 'neutral',
+        expression_weight: 0.5,
+        audio_device: audioDevice,
+      })
+      return
     }
   }
 
@@ -1897,10 +2144,42 @@ wss.on('connection', (ws) => {
       }
 
       console.log(`[meeting] ${mode}: "${parsed.text.slice(0, 80)}..." (${reason})`)
+
+      // Fast-path for explicit relay/gateway speak dispatch requests in meeting mode.
+      const directMeetingCommand = parseDirectRelaySpeakCommand(parsed.text)
+      if (directMeetingCommand) {
+        const meetingBroadcast = (msg: Record<string, any>) => {
+          if (!hasExplicitRoutingFields(msg)) {
+            msg.audio_device = 'meeting'
+          }
+          const raw = JSON.stringify(msg)
+          for (const client of clients) {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(raw)
+            }
+          }
+        }
+        try {
+          const dispatchResult = await dispatchDirectRelaySpeakCommand(directMeetingCommand, meetingBroadcast)
+          console.log(
+            `[meeting-direct-relay] dispatched ${dispatchResult.resolvedType} to ${summarizeRouteTargets(directMeetingCommand.targets)}`,
+          )
+        } catch (error: any) {
+          console.error(`[meeting-direct-relay] failed: ${error?.message || error}`)
+          meetingBroadcast({
+            type: 'speak',
+            text: 'I could not dispatch that relay speak command.',
+            action_id: '88_Thinking',
+            expression: 'neutral',
+            expression_weight: 0.5,
+          })
+        }
+        return
+      }
       
       const meetingPrompt = mode === 'proactive'
-        ? `[MEETING MODE — Proactive] You are currently in a live Google Meet meeting as a virtual avatar. There's been a pause. Based on the transcript, share a brief insight or ask a question. Be concise (1-2 sentences). If nothing to add, just say one short sentence acknowledging the pause.\n\n[Meeting Transcript]\n${transcript}\n\n[Respond in the same language as the meeting.]`
-        : `[MEETING MODE — Triggered] You are currently in a live Google Meet meeting as a virtual avatar. Someone just spoke and it's directed at you or relevant. Respond naturally using your full knowledge.\n\n[Meeting Transcript]\n${transcript}\n\n[Latest speech] "${parsed.text}"\n[Trigger reason] ${reason}\n\n[IMPORTANT: Keep response concise (2-4 sentences). Use the same language as the speaker. Reference your knowledge of the Clawatar project, your capabilities, development timeline, etc. when relevant.]`
+        ? `[MEETING MODE — Proactive] You are currently in a live Google Meet meeting as a virtual avatar. There's been a pause. Based on the transcript, share a brief insight or ask a question. Be concise (1-2 sentences). If nothing to add, just say one short sentence acknowledging the pause.\n\n[Meeting Transcript]\n${transcript}\n\n[Respond in the same language as the meeting.]\n[Do not tell users to manually send WebSocket/gateway JSON commands.]`
+        : `[MEETING MODE — Triggered] You are currently in a live Google Meet meeting as a virtual avatar. Someone just spoke and it's directed at you or relevant. Respond naturally using your full knowledge.\n\n[Meeting Transcript]\n${transcript}\n\n[Latest speech] "${parsed.text}"\n[Trigger reason] ${reason}\n\n[IMPORTANT: Keep response concise (2-4 sentences). Use the same language as the speaker. Reference your knowledge of the Clawatar project, your capabilities, development timeline, etc. when relevant. Do not tell users to manually send WebSocket/gateway JSON commands.]`
       
       handleMeetingSpeech(meetingPrompt, ws).catch(e => {
         console.error('Meeting speech handling error:', e.message)

@@ -77,6 +77,8 @@ function commandToEnvelope(command: AvatarSyncCommand): SyncEnvelope | null {
         category: 'action',
         payload: sanitizePayload({
           actionId,
+          loop: command.loop,
+          category: command.category,
           expression: command.expression,
           expressionWeight: command.expression_weight,
         }),

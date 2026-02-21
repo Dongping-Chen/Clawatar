@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Avatar Browser</title>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --panel: #fefefe;
+      --panel-soft: #f5f8ff;
+      --line: #d7e0ee;
+      --text: #162031;
+      --muted: #5a6b85;
+      --primary: #2f6df6;
+      --primary-strong: #1c4ec2;
+      --ok: #2e8b57;
+      --warn: #d08a22;
+      --bad: #be2f55;
+      --shadow: 0 10px 30px rgba(29, 50, 90, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      font-family: "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1000px 500px at 85% -10%, #dbe8ff 0%, transparent 60%),
+        radial-gradient(700px 420px at -10% 105%, #d7f0ff 0%, transparent 60%),
+        var(--bg);
+    }
+
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 14px;
+      padding: 14px;
+    }
+
+    .panel {
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .section {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section:last-child {
+      border-bottom: none;
+    }
+
+    .title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+
+    .subtitle {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    button, select, input, textarea {
+      font: inherit;
+    }
+
+    .btn {
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: 140ms ease;
+      background: var(--panel-soft);
+      color: var(--text);
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+      border-color: #2459cb;
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-strong);
+    }
+
+    .btn-ghost {
+      border-color: var(--line);
+      background: #fff;
+    }
+
+    .btn-chip {
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .btn-chip.active {
+      border-color: var(--primary);
+      background: #e8f0ff;
+      color: #1f4cb3;
+    }
+
+    .status {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.35;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .search {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: #fff;
+      outline: none;
+    }
+
+    .search:focus {
+      border-color: #8fb0ff;
+      box-shadow: 0 0 0 3px rgba(47, 109, 246, 0.14);
+    }
+
+    .list-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 8px;
+      background: linear-gradient(180deg, #fefefe 0%, #f9fbff 100%);
+    }
+
+    .item {
+      width: 100%;
+      text-align: left;
+      border: 1px solid #e5ebf5;
+      border-radius: 12px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+      background: #fff;
+      cursor: pointer;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: start;
+    }
+
+    .item:hover {
+      border-color: #b2c8f7;
+      box-shadow: 0 4px 14px rgba(50, 80, 140, 0.13);
+    }
+
+    .item.active {
+      border-color: var(--primary);
+      background: #eef4ff;
+      box-shadow: 0 6px 16px rgba(47, 109, 246, 0.2);
+    }
+
+    .item-name {
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.3;
+      color: #14223a;
+    }
+
+    .item-path {
+      margin-top: 3px;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.3;
+    }
+
+    .badge {
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+      border-radius: 999px;
+      padding: 4px 8px;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+
+    .badge-shortlist {
+      color: #115934;
+      background: #dcf5e8;
+      border-color: #9fdcbc;
+    }
+
+    .badge-maybe {
+      color: #7d4a0c;
+      background: #fff1db;
+      border-color: #f0cc90;
+    }
+
+    .badge-reject {
+      color: #8d1e40;
+      background: #ffe1ea;
+      border-color: #f1a2ba;
+    }
+
+    .viewer {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .viewer-top {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .selected-name {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .selected-path {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--muted);
+      word-break: break-all;
+      line-height: 1.25;
+    }
+
+    .viewer-main {
+      position: relative;
+      min-height: 0;
+      background: #dfe9fb;
+    }
+
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+      background: #dfe9fb;
+    }
+
+    .loading-mask {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      background: rgba(228, 237, 255, 0.76);
+      color: #183260;
+      font-size: 14px;
+      font-weight: 700;
+      z-index: 10;
+      backdrop-filter: blur(4px);
+    }
+
+    .loading-mask.show {
+      display: flex;
+    }
+
+    .viewer-bottom {
+      padding: 12px 14px;
+      border-top: 1px solid var(--line);
+      display: grid;
+      gap: 10px;
+      background: linear-gradient(180deg, #fdfefe 0%, #f6f9ff 100%);
+    }
+
+    .label-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .label-btn {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .label-btn[data-label="shortlist"].active {
+      background: #dcf5e8;
+      border-color: #95d6b4;
+      color: #115934;
+    }
+
+    .label-btn[data-label="maybe"].active {
+      background: #fff1db;
+      border-color: #efc786;
+      color: #7d4a0c;
+    }
+
+    .label-btn[data-label="reject"].active {
+      background: #ffe1ea;
+      border-color: #f2a2bc;
+      color: #8d1e40;
+    }
+
+    .score {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px 8px;
+      background: #fff;
+      font-size: 12px;
+    }
+
+    .note {
+      width: 100%;
+      min-height: 68px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 9px 10px;
+      background: #fff;
+      outline: none;
+    }
+
+    .note:focus {
+      border-color: #8fb0ff;
+      box-shadow: 0 0 0 3px rgba(47, 109, 246, 0.14);
+    }
+
+    .footer-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 1080px) {
+      .app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 48vh 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="panel sidebar">
+      <div class="section">
+        <h1 class="title">Avatar Browser</h1>
+        <p class="subtitle">
+          Pick your local folder, browse VRM models, mark shortlist/maybe/reject, and switch quickly.
+        </p>
+      </div>
+
+      <div class="section">
+        <div class="row">
+          <button id="pick-dir-btn" class="btn btn-primary">Pick VRM Directory</button>
+          <button id="export-btn" class="btn btn-ghost">Export Labels</button>
+        </div>
+        <p id="status" class="status" style="margin-top:8px;">
+          Ready. Suggested path:
+          /Users/dongpingchen/.openclaw/workspace/assets/open-source-avatars-cc0/github/100Avatars
+        </p>
+      </div>
+
+      <div class="section">
+        <input id="search" class="search" placeholder="Search file name / path..." autocomplete="off">
+        <div class="row" style="margin-top:8px;">
+          <button class="btn-chip active" data-filter="all">All</button>
+          <button class="btn-chip" data-filter="shortlist">Shortlist</button>
+          <button class="btn-chip" data-filter="maybe">Maybe</button>
+          <button class="btn-chip" data-filter="reject">Reject</button>
+          <button class="btn-chip" data-filter="unlabeled">Unlabeled</button>
+        </div>
+        <p id="counter" class="status" style="margin-top:8px;">0 models</p>
+      </div>
+
+      <div id="model-list" class="list-wrap"></div>
+    </aside>
+
+    <main class="panel viewer">
+      <div class="viewer-top">
+        <div>
+          <h2 id="selected-name" class="selected-name">No model selected</h2>
+          <div id="selected-path" class="selected-path">Pick a directory to start browsing.</div>
+        </div>
+        <div class="row">
+          <button id="prev-btn" class="btn btn-ghost">Prev</button>
+          <button id="next-btn" class="btn btn-ghost">Next</button>
+        </div>
+      </div>
+
+      <div class="viewer-main">
+        <div id="loading-mask" class="loading-mask">Loading model...</div>
+        <iframe id="viewer-frame" src="/index.html?embed&noautoload=1&freepreview=1"></iframe>
+      </div>
+
+      <div class="viewer-bottom">
+        <div class="label-row">
+          <span style="font-size:12px; color:var(--muted);">Label:</span>
+          <button class="label-btn" data-label="shortlist">Shortlist</button>
+          <button class="label-btn" data-label="maybe">Maybe</button>
+          <button class="label-btn" data-label="reject">Reject</button>
+          <button id="clear-label-btn" class="label-btn">Clear</button>
+          <span style="font-size:12px; color:var(--muted); margin-left:6px;">Score:</span>
+          <select id="score" class="score">
+            <option value="0">0</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+          </select>
+        </div>
+        <textarea id="note" class="note" placeholder="Your notes for this avatar..."></textarea>
+        <div class="footer-row">
+          <div id="hint">Shortcuts: ↑/↓ switch, 1/2/3 label, Ctrl/Cmd+F search</div>
+          <div id="save-state">Not saved yet</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    ;(() => {
+      const STORAGE_KEY = 'avatar_browser_annotations_v1'
+      const CACHE_LIMIT = 90
+      const TARGET_ORIGIN = window.location.origin
+
+      const pickDirBtn = document.getElementById('pick-dir-btn')
+      const exportBtn = document.getElementById('export-btn')
+      const statusEl = document.getElementById('status')
+      const searchEl = document.getElementById('search')
+      const counterEl = document.getElementById('counter')
+      const modelListEl = document.getElementById('model-list')
+      const selectedNameEl = document.getElementById('selected-name')
+      const selectedPathEl = document.getElementById('selected-path')
+      const prevBtn = document.getElementById('prev-btn')
+      const nextBtn = document.getElementById('next-btn')
+      const viewerFrame = document.getElementById('viewer-frame')
+      const loadingMask = document.getElementById('loading-mask')
+      const scoreEl = document.getElementById('score')
+      const noteEl = document.getElementById('note')
+      const saveStateEl = document.getElementById('save-state')
+      const filterButtons = Array.from(document.querySelectorAll('.btn-chip'))
+      const labelButtons = Array.from(document.querySelectorAll('.label-btn[data-label]'))
+      const clearLabelBtn = document.getElementById('clear-label-btn')
+
+      let models = []
+      let filtered = []
+      let activeFilter = 'all'
+      let searchText = ''
+      let currentRel = null
+      let loadSeq = 0
+      let noteSaveTimer = null
+      let objectUrlCache = new Map()
+      let objectUrlOrder = []
+
+      const annotations = loadAnnotations()
+
+      let iframeLoaded = false
+      const iframeReady = new Promise((resolve) => {
+        viewerFrame.addEventListener('load', () => {
+          iframeLoaded = true
+          window.setTimeout(resolve, 240)
+        })
+      })
+
+      function loadAnnotations() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY)
+          if (!raw) return {}
+          const parsed = JSON.parse(raw)
+          return parsed && typeof parsed === 'object' ? parsed : {}
+        } catch {
+          return {}
+        }
+      }
+
+      function saveAnnotations() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(annotations))
+        saveStateEl.textContent = `Saved at ${new Date().toLocaleTimeString()}`
+      }
+
+      function getAnnotation(rel) {
+        return annotations[rel] || { label: '', score: 0, note: '', updatedAt: 0 }
+      }
+
+      function setStatus(msg) {
+        statusEl.textContent = msg
+      }
+
+      function setLoading(show, text) {
+        if (show) {
+          loadingMask.classList.add('show')
+          loadingMask.textContent = text || 'Loading model...'
+        } else {
+          loadingMask.classList.remove('show')
+        }
+      }
+
+      function shouldSkipDir(name) {
+        return (
+          name === '.git' ||
+          name === 'node_modules' ||
+          name === '.DS_Store' ||
+          name.endsWith('_TSB')
+        )
+      }
+
+      function compareRel(a, b) {
+        return a.rel.localeCompare(b.rel, undefined, { numeric: true, sensitivity: 'base' })
+      }
+
+      async function scanVRMFiles(rootDirHandle) {
+        const out = []
+        let scannedDirs = 0
+        let scannedFiles = 0
+
+        async function walk(dirHandle, prefix) {
+          scannedDirs += 1
+          if (scannedDirs % 8 === 0) {
+            setStatus(`Scanning...\nDirs: ${scannedDirs}\nFiles: ${scannedFiles}\nVRM found: ${out.length}`)
+            await new Promise((r) => setTimeout(r, 0))
+          }
+
+          for await (const [name, handle] of dirHandle.entries()) {
+            if (handle.kind === 'directory') {
+              if (shouldSkipDir(name)) continue
+              await walk(handle, prefix ? `${prefix}/${name}` : name)
+              continue
+            }
+
+            scannedFiles += 1
+            if (!name.toLowerCase().endsWith('.vrm')) continue
+            const rel = prefix ? `${prefix}/${name}` : name
+            out.push({
+              rel,
+              name,
+              handle,
+            })
+          }
+        }
+
+        await walk(rootDirHandle, '')
+        out.sort(compareRel)
+        return out
+      }
+
+      function labelToClass(label) {
+        if (label === 'shortlist') return 'badge badge-shortlist'
+        if (label === 'maybe') return 'badge badge-maybe'
+        if (label === 'reject') return 'badge badge-reject'
+        return ''
+      }
+
+      function labelToText(label) {
+        if (label === 'shortlist') return 'SHORTLIST'
+        if (label === 'maybe') return 'MAYBE'
+        if (label === 'reject') return 'REJECT'
+        return ''
+      }
+
+      function applyFilterAndRender() {
+        const q = searchText.trim().toLowerCase()
+        filtered = models.filter((item) => {
+          const ann = getAnnotation(item.rel)
+          const bySearch = !q || item.rel.toLowerCase().includes(q)
+          if (!bySearch) return false
+          if (activeFilter === 'all') return true
+          if (activeFilter === 'unlabeled') return !ann.label
+          return ann.label === activeFilter
+        })
+
+        renderList()
+        counterEl.textContent = `${filtered.length} / ${models.length} models`
+      }
+
+      function renderList() {
+        modelListEl.innerHTML = ''
+
+        if (filtered.length === 0) {
+          const empty = document.createElement('div')
+          empty.className = 'status'
+          empty.style.padding = '10px'
+          empty.textContent = 'No models match the current filter.'
+          modelListEl.appendChild(empty)
+          return
+        }
+
+        for (const item of filtered) {
+          const ann = getAnnotation(item.rel)
+          const row = document.createElement('button')
+          row.type = 'button'
+          row.className = `item${item.rel === currentRel ? ' active' : ''}`
+
+          const left = document.createElement('div')
+          const name = document.createElement('div')
+          name.className = 'item-name'
+          name.textContent = item.name
+          const path = document.createElement('div')
+          path.className = 'item-path'
+          path.textContent = item.rel
+          left.appendChild(name)
+          left.appendChild(path)
+
+          row.appendChild(left)
+
+          if (ann.label) {
+            const badge = document.createElement('div')
+            badge.className = labelToClass(ann.label)
+            badge.textContent = labelToText(ann.label)
+            row.appendChild(badge)
+          } else {
+            const spacer = document.createElement('div')
+            spacer.style.width = '2px'
+            row.appendChild(spacer)
+          }
+
+          row.addEventListener('click', () => {
+            selectModel(item.rel, true)
+          })
+
+          modelListEl.appendChild(row)
+        }
+      }
+
+      function updateDetailPanel(rel) {
+        if (!rel) {
+          selectedNameEl.textContent = 'No model selected'
+          selectedPathEl.textContent = 'Pick a directory to start browsing.'
+          scoreEl.value = '0'
+          noteEl.value = ''
+          labelButtons.forEach((btn) => btn.classList.remove('active'))
+          return
+        }
+
+        const item = models.find((m) => m.rel === rel)
+        if (!item) return
+        const ann = getAnnotation(rel)
+
+        selectedNameEl.textContent = item.name
+        selectedPathEl.textContent = item.rel
+        scoreEl.value = String(ann.score || 0)
+        noteEl.value = ann.note || ''
+
+        labelButtons.forEach((btn) => {
+          btn.classList.toggle('active', btn.dataset.label === ann.label)
+        })
+      }
+
+      async function getObjectURL(item) {
+        if (objectUrlCache.has(item.rel)) {
+          return objectUrlCache.get(item.rel)
+        }
+
+        const file = await item.handle.getFile()
+        const url = URL.createObjectURL(file)
+        objectUrlCache.set(item.rel, url)
+        objectUrlOrder.push(item.rel)
+
+        while (objectUrlOrder.length > CACHE_LIMIT) {
+          const oldest = objectUrlOrder.shift()
+          if (!oldest) break
+          const oldestUrl = objectUrlCache.get(oldest)
+          if (oldestUrl) URL.revokeObjectURL(oldestUrl)
+          objectUrlCache.delete(oldest)
+        }
+
+        return url
+      }
+
+      async function waitForModelSwap(previousRef, seq) {
+        const startedAt = performance.now()
+        return new Promise((resolve, reject) => {
+          const timer = setInterval(() => {
+            if (seq !== loadSeq) {
+              clearInterval(timer)
+              reject(new Error('superseded'))
+              return
+            }
+
+            const win = viewerFrame.contentWindow
+            const currentRef = win && win.__app_state ? win.__app_state.vrm : null
+            if (currentRef && (previousRef == null || currentRef !== previousRef)) {
+              clearInterval(timer)
+              resolve()
+              return
+            }
+
+            if (performance.now() - startedAt > 20000) {
+              clearInterval(timer)
+              reject(new Error('timeout'))
+            }
+          }, 120)
+        })
+      }
+
+      function getCurrentFilteredIndex() {
+        if (!currentRel) return -1
+        return filtered.findIndex((it) => it.rel === currentRel)
+      }
+
+      async function preloadNearby(rel) {
+        const idx = models.findIndex((it) => it.rel === rel)
+        if (idx < 0) return
+
+        const neighbors = [idx + 1, idx + 2, idx - 1]
+        for (const n of neighbors) {
+          if (n < 0 || n >= models.length) continue
+          getObjectURL(models[n]).catch(() => {})
+        }
+      }
+
+      async function loadIntoViewer(rel) {
+        const item = models.find((m) => m.rel === rel)
+        if (!item) return
+
+        await iframeReady
+        if (!iframeLoaded || !viewerFrame.contentWindow) return
+
+        const seq = ++loadSeq
+        setLoading(true, `Loading ${item.name}...`)
+
+        const viewerWindow = viewerFrame.contentWindow
+        const previousRef = viewerWindow.__app_state ? viewerWindow.__app_state.vrm : null
+
+        try {
+          const url = await getObjectURL(item)
+          viewerWindow.postMessage({ type: 'loadModel', url }, TARGET_ORIGIN)
+          await waitForModelSwap(previousRef, seq)
+          if (seq !== loadSeq) return
+          setLoading(false)
+          setStatus(`Loaded: ${item.rel}`)
+        } catch (err) {
+          if (seq !== loadSeq) return
+          setLoading(false)
+          setStatus(`Load timeout or failed: ${item.rel}`)
+          console.error(err)
+        }
+      }
+
+      async function selectModel(rel, doLoad) {
+        currentRel = rel
+        renderList()
+        updateDetailPanel(rel)
+        await preloadNearby(rel)
+        if (doLoad) {
+          await loadIntoViewer(rel)
+        }
+      }
+
+      function setLabel(label) {
+        if (!currentRel) return
+        const prev = getAnnotation(currentRel)
+        annotations[currentRel] = {
+          ...prev,
+          label,
+          updatedAt: Date.now(),
+        }
+        saveAnnotations()
+        renderList()
+        updateDetailPanel(currentRel)
+      }
+
+      function setScore(score) {
+        if (!currentRel) return
+        const prev = getAnnotation(currentRel)
+        annotations[currentRel] = {
+          ...prev,
+          score,
+          updatedAt: Date.now(),
+        }
+        saveAnnotations()
+      }
+
+      function setNote(note) {
+        if (!currentRel) return
+        const prev = getAnnotation(currentRel)
+        annotations[currentRel] = {
+          ...prev,
+          note,
+          updatedAt: Date.now(),
+        }
+        saveAnnotations()
+      }
+
+      function exportAnnotations() {
+        const payload = {
+          exportedAt: new Date().toISOString(),
+          totalModels: models.length,
+          labeledCount: Object.values(annotations).filter((x) => x && x.label).length,
+          annotations,
+        }
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `avatar-annotations-${Date.now()}.json`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+      }
+
+      async function pickDirectoryAndScan() {
+        if (!window.showDirectoryPicker) {
+          alert('This browser does not support showDirectoryPicker(). Please use Chrome/Edge.')
+          return
+        }
+
+        try {
+          const handle = await window.showDirectoryPicker({ mode: 'read' })
+          setStatus('Scanning directory...')
+          models = await scanVRMFiles(handle)
+          currentRel = null
+          setStatus(`Scan complete.\nFound ${models.length} VRM files.`)
+          applyFilterAndRender()
+          updateDetailPanel(null)
+          if (filtered.length > 0) {
+            await selectModel(filtered[0].rel, true)
+          }
+        } catch (err) {
+          if (err && err.name === 'AbortError') return
+          setStatus('Failed to open folder.')
+          console.error(err)
+        }
+      }
+
+      function moveSelection(step) {
+        if (filtered.length === 0) return
+        const idx = getCurrentFilteredIndex()
+        const next = idx < 0 ? 0 : Math.max(0, Math.min(filtered.length - 1, idx + step))
+        selectModel(filtered[next].rel, true)
+      }
+
+      pickDirBtn.addEventListener('click', pickDirectoryAndScan)
+      exportBtn.addEventListener('click', exportAnnotations)
+      prevBtn.addEventListener('click', () => moveSelection(-1))
+      nextBtn.addEventListener('click', () => moveSelection(1))
+
+      searchEl.addEventListener('input', () => {
+        searchText = searchEl.value
+        applyFilterAndRender()
+      })
+
+      filterButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          activeFilter = btn.dataset.filter
+          filterButtons.forEach((b) => b.classList.toggle('active', b === btn))
+          applyFilterAndRender()
+        })
+      })
+
+      labelButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const label = btn.dataset.label
+          const current = currentRel ? getAnnotation(currentRel).label : ''
+          setLabel(current === label ? '' : label)
+        })
+      })
+
+      clearLabelBtn.addEventListener('click', () => setLabel(''))
+
+      scoreEl.addEventListener('change', () => {
+        const v = Number(scoreEl.value || 0)
+        setScore(Number.isFinite(v) ? v : 0)
+      })
+
+      noteEl.addEventListener('input', () => {
+        if (noteSaveTimer) window.clearTimeout(noteSaveTimer)
+        noteSaveTimer = window.setTimeout(() => {
+          setNote(noteEl.value || '')
+        }, 220)
+      })
+
+      document.addEventListener('keydown', (e) => {
+        const isTyping = (
+          e.target instanceof HTMLInputElement ||
+          e.target instanceof HTMLTextAreaElement ||
+          e.target instanceof HTMLSelectElement
+        )
+
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+          e.preventDefault()
+          searchEl.focus()
+          searchEl.select()
+          return
+        }
+
+        if (isTyping) return
+
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          moveSelection(1)
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          moveSelection(-1)
+        } else if (e.key === '1') {
+          setLabel('shortlist')
+        } else if (e.key === '2') {
+          setLabel('maybe')
+        } else if (e.key === '3') {
+          setLabel('reject')
+        }
+      })
+
+      window.addEventListener('beforeunload', () => {
+        for (const rel of objectUrlOrder) {
+          const url = objectUrlCache.get(rel)
+          if (url) URL.revokeObjectURL(url)
+        }
+      })
+
+      applyFilterAndRender()
+      updateDetailPanel(null)
+    })()
+  </script>
+</body>
+</html>

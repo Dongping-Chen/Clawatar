@@ -1,4 +1,5 @@
 import { state } from './main'
+import type { VRM } from '@pixiv/three-vrm'
 
 let speaking = false
 let speakStart = 0
@@ -10,10 +11,25 @@ let analyser: AnalyserNode | null = null
 let audioSource: AudioBufferSourceNode | null = null
 let audioPlaying = false
 let onAudioEndCallback: (() => void) | null = null
+const missingMouthExpressionWarnings = new Set<string>()
 
 function getAudioContext(): AudioContext {
   if (!audioContext) audioContext = new AudioContext()
   return audioContext
+}
+
+function setExpressionIfAvailable(vrm: VRM, name: string, value: number) {
+  const manager = vrm.expressionManager
+  if (!manager) return
+  if (manager.getExpression(name) != null) {
+    manager.setValue(name, value)
+    return
+  }
+
+  if (!missingMouthExpressionWarnings.has(name)) {
+    missingMouthExpressionWarnings.add(name)
+    console.warn(`[lip-sync] Model does not define mouth expression "${name}", skipping.`)
+  }
 }
 
 /**
@@ -116,11 +132,11 @@ export function updateLipSync() {
     const ee = clamp((high / 255) * 1.0 * volume)       // tight spread - high
     const ou = clamp((midLow / 255) * 0.8 * volume)     // pursed - mid-low
 
-    vrm.expressionManager.setValue('aa', aa)
-    vrm.expressionManager.setValue('oh', oh)
-    vrm.expressionManager.setValue('ih', ih)
-    vrm.expressionManager.setValue('ee', ee)
-    vrm.expressionManager.setValue('ou', ou)
+    setExpressionIfAvailable(vrm, 'aa', aa)
+    setExpressionIfAvailable(vrm, 'oh', oh)
+    setExpressionIfAvailable(vrm, 'ih', ih)
+    setExpressionIfAvailable(vrm, 'ee', ee)
+    setExpressionIfAvailable(vrm, 'ou', ou)
     return
   }
 
@@ -134,19 +150,19 @@ export function updateLipSync() {
   const elapsed = performance.now() / 1000 - speakStart
   if (elapsed > speakDuration) {
     speaking = false
-    vrm.expressionManager.setValue('aa', 0)
-    vrm.expressionManager.setValue('oh', 0)
-    vrm.expressionManager.setValue('ih', 0)
-    vrm.expressionManager.setValue('ee', 0)
-    vrm.expressionManager.setValue('ou', 0)
+    setExpressionIfAvailable(vrm, 'aa', 0)
+    setExpressionIfAvailable(vrm, 'oh', 0)
+    setExpressionIfAvailable(vrm, 'ih', 0)
+    setExpressionIfAvailable(vrm, 'ee', 0)
+    setExpressionIfAvailable(vrm, 'ou', 0)
     return
   }
 
   const t = elapsed * 8
   const aa = Math.max(0, Math.sin(t) * 0.6 + Math.sin(t * 1.7) * 0.3)
   const oh = Math.max(0, Math.cos(t * 0.7) * 0.3)
-  vrm.expressionManager.setValue('aa', aa)
-  vrm.expressionManager.setValue('oh', oh)
+  setExpressionIfAvailable(vrm, 'aa', aa)
+  setExpressionIfAvailable(vrm, 'oh', oh)
 }
 
 function avg(arr: Uint8Array, from: number, to: number): number {
@@ -166,10 +182,10 @@ export function resetLipSync() {
   stopAudioLipSync()
   const vrm = state.vrm
   if (vrm?.expressionManager) {
-    vrm.expressionManager.setValue('aa', 0)
-    vrm.expressionManager.setValue('oh', 0)
-    vrm.expressionManager.setValue('ih', 0)
-    vrm.expressionManager.setValue('ee', 0)
-    vrm.expressionManager.setValue('ou', 0)
+    setExpressionIfAvailable(vrm, 'aa', 0)
+    setExpressionIfAvailable(vrm, 'oh', 0)
+    setExpressionIfAvailable(vrm, 'ih', 0)
+    setExpressionIfAvailable(vrm, 'ee', 0)
+    setExpressionIfAvailable(vrm, 'ou', 0)
   }
 }

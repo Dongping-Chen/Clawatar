@@ -1,10 +1,10 @@
 import { handleSceneCommand } from './scene-system'
 import { loadVRM } from './vrm-loader'
-import { loadAndPlay, setCrossfadeScale } from './animation'
+import { DEFAULT_BASE_IDLE_ACTION, loadAndPlay, playBaseIdle, setCrossfadeScale } from './animation'
 import { setExpression, resetExpressions, resetExpressionsImmediately } from './expressions'
 import { setAutoBlinkEnabled } from './blink'
 import { setLookAtTarget } from './look-at'
-import { setBackgroundTheme } from './scene'
+import { setBackgroundTheme, setContactShadowExternalAnchor, setContactShadowRuntimeEnabled } from './scene'
 import { applyThemeParticles } from './backgrounds'
 import { setGradientTheme } from './gradient-background'
 import { detectEmotion } from './emotion-detect'
@@ -24,8 +24,10 @@ let reconnectTimer: number | null = null
 
 // This device's ID — used for focus-based audio routing
 const WEB_DEVICE_ID = `web-${crypto.randomUUID().slice(0, 8)}`
-const isEmbedMode = new URLSearchParams(window.location.search).has('embed')
-const isMeetingMode = new URLSearchParams(window.location.search).has('meeting')
+const queryParams = new URLSearchParams(window.location.search)
+const isEmbedMode = queryParams.has('embed')
+const isMeetingMode = queryParams.has('meeting')
+const isBgOnlyMode = queryParams.has('bgonly')
 const WEB_DEVICE_TYPE = isMeetingMode ? 'meeting' : isEmbedMode ? 'ios-embed' : 'web'
 ;(window as any).__clawatar_device_id = WEB_DEVICE_ID
 
@@ -116,7 +118,7 @@ async function handleSyncCommand(cmd: any) {
       if (Array.isArray(payload.sounds)) {
         const sounds = payload.sounds
           .filter((s: any) => typeof s?.id === 'string')
-          .map((s: any) => ({ id: s.id, volume: typeof s.volume === 'number' ? s.volume : 0.7 }))
+          .map((s: any) => ({ id: s.id, volume: typeof s.volume === 'number' ? s.volume : 0.52 }))
         await setAmbience(sounds)
       }
       if (typeof payload.id === 'string' && typeof payload.enabled === 'boolean') {
@@ -177,6 +179,8 @@ async function handleSyncCommand(cmd: any) {
 
     case 'action': {
       const actionId = typeof payload.actionId === 'string' ? payload.actionId : undefined
+      const loop = typeof payload.loop === 'boolean' ? payload.loop : false
+      const category = typeof payload.category === 'string' ? payload.category : undefined
       const expression = typeof payload.expression === 'string' ? payload.expression : undefined
       const expressionWeight = typeof payload.expressionWeight === 'number' ? payload.expressionWeight : 0.5
 
@@ -194,7 +198,11 @@ async function handleSyncCommand(cmd: any) {
       }
 
       if (actionId) {
-        await requestAction(actionId, { sync: false })
+        await requestAction(actionId, {
+          sync: false,
+          loop,
+          category,
+        })
       }
       break
     }
@@ -223,6 +231,39 @@ async function handleSyncCommand(cmd: any) {
       break
     }
 
+    case 'shadow_anchor': {
+      if (payload.visible === false) {
+        setContactShadowExternalAnchor(null)
+        break
+      }
+
+      const x = typeof payload.x === 'number' ? payload.x : NaN
+      const z = typeof payload.z === 'number' ? payload.z : NaN
+      if (!Number.isFinite(x) || !Number.isFinite(z)) {
+        setContactShadowExternalAnchor(null)
+        break
+      }
+
+      setContactShadowExternalAnchor({
+        x,
+        z,
+        lift: typeof payload.lift === 'number' ? payload.lift : undefined,
+        stance: typeof payload.stance === 'number' ? payload.stance : undefined,
+        visible: true,
+      })
+      break
+    }
+
+    case 'shadow_stage': {
+      if (typeof payload.active === 'boolean') {
+        const setShadowStageActive = (window as any).__setShadowStageActive
+        if (typeof setShadowStageActive === 'function') {
+          setShadowStageActive(payload.active)
+        }
+      }
+      break
+    }
+
     default:
       break
   }
@@ -237,13 +278,19 @@ async function handleCommand(cmd: any, options: HandleCommandOptions = {}) {
     switch (cmd.type) {
       case 'play_action':
         if (cmd.action_id) {
+          const loop = typeof cmd.loop === 'boolean' ? cmd.loop : false
+          const category = typeof cmd.category === 'string' ? cmd.category : undefined
           // Apply expression from master if provided (follower sync)
           if (cmd.expression) {
             setExpression(cmd.expression, cmd.expression_weight ?? 0.5, undefined, { sync: false })
           } else {
             resetExpressionsImmediately()
           }
-          await requestAction(cmd.action_id, { sync: false })
+          await requestAction(cmd.action_id, {
+            sync: false,
+            loop,
+            category,
+          })
         }
         break
       case 'set_expression':
@@ -263,7 +310,8 @@ async function handleCommand(cmd: any, options: HandleCommandOptions = {}) {
         // Fallback if server didn't handle TTS (no API key, etc.)
         await requestSpeak(cmd.text ?? '', cmd.action_id, cmd.expression, cmd.expression_weight)
         break
-      case 'speak_audio': {
+      case 'speak_audio':
+      case 'tts_audio': {
         // Audio-driven speech from TTS server
         if (cmd.text) addMessage('avatar', cmd.text)
         // Auto-detect emotion if server didn't provide expression
@@ -331,6 +379,9 @@ async function handleCommand(cmd: any, options: HandleCommandOptions = {}) {
           (window as any).setCharacterVisible(!!cmd.visible)
         }
         break
+      case 'set_contact_shadow_enabled':
+        setContactShadowRuntimeEnabled(!!cmd.enabled)
+        break
       case 'user_typing':
         notifyUserActivity('typing')
         break
@@ -350,7 +401,16 @@ async function handleCommand(cmd: any, options: HandleCommandOptions = {}) {
 
       // Legacy protocol
       case 'loadModel':
-        if (cmd.url) await loadVRM(cmd.url)
+        if (isBgOnlyMode) {
+          break
+        }
+        if (cmd.url) {
+          await loadVRM(cmd.url)
+          await playBaseIdle(DEFAULT_BASE_IDLE_ACTION)
+          try {
+            ;(window as any).webkit?.messageHandlers?.clawatar?.postMessage({ event: 'modelLoaded' })
+          } catch {}
+        }
         break
       case 'loadAnimation':
         if (cmd.url) await loadAndPlay(cmd.url)
@@ -394,7 +454,7 @@ async function handleCommand(cmd: any, options: HandleCommandOptions = {}) {
         if (Array.isArray(cmd.sounds)) {
           const sounds = cmd.sounds
             .filter((s: any) => typeof s?.id === 'string')
-            .map((s: any) => ({ id: s.id, volume: typeof s.volume === 'number' ? s.volume : 0.7 }))
+            .map((s: any) => ({ id: s.id, volume: typeof s.volume === 'number' ? s.volume : 0.52 }))
           await setAmbience(sounds)
         }
         break
@@ -466,7 +526,7 @@ async function handleCommand(cmd: any, options: HandleCommandOptions = {}) {
     }
 
     // Send ack for commands, but NOT for status messages (prevents broadcast loops)
-    if (sendAck && cmd.type !== 'speak_audio' && cmd.type !== 'tts_error' && !(cmd as any).status) {
+    if (sendAck && cmd.type !== 'speak_audio' && cmd.type !== 'tts_audio' && cmd.type !== 'tts_error' && !(cmd as any).status) {
       sendWS({ status: 'ok', type: cmd.type })
     }
   } catch (e: any) {

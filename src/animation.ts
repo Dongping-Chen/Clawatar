@@ -1,7 +1,7 @@
 import { createVRMAnimationClip } from '@pixiv/three-vrm-animation'
 import type { VRMAnimation } from '@pixiv/three-vrm-animation'
 import type { AnimationAction, AnimationClip } from 'three'
-import { LoopOnce, LoopRepeat, Quaternion } from 'three'
+import { LoopOnce, LoopRepeat, Quaternion, Vector3 } from 'three'
 import { state } from './main'
 import { loadVRMA } from './vrm-loader'
 
@@ -9,22 +9,41 @@ const animationCache = new Map<string, VRMAnimation>()
 const animationLoadPromises = new Map<string, Promise<VRMAnimation>>()
 const clipCache = new Map<string, AnimationClip>()
 const actionCache = new Map<string, AnimationAction>()
+const clipBoundaryCache = new WeakMap<AnimationClip, ClipBoundaryPose>()
 
 let cachedSceneRef: object | null = null
 let currentAction: AnimationAction | null = null
+let currentActionKey: string | null = null
 let baseIdleAction: AnimationAction | null = null
 export let currentCategory: string = 'idle'
+export const DEFAULT_BASE_IDLE_ACTION = 'dm_128'
 
 /** Scale factor for crossfade duration. Higher = slower transitions. Adjust via WS or console. */
 export let crossfadeScale = 1.2
-const CROSSFADE_MIN = 0.3
-const CROSSFADE_MAX = 1.0
+const CROSSFADE_MIN = 0.28
+const CROSSFADE_MAX = 1.35
 const ACTION_TO_IDLE_MIN_FADE = 0.45
-const IDLE_TO_IDLE_FADE = 0.5
+const IDLE_TO_ACTION_MIN_FADE = 0.38
+const POSITION_DISTANCE_NORMALIZER = 0.45
+
+type PoseQuatMap = Map<string, Quaternion>
+type PosePosMap = Map<string, Vector3>
+
+interface ClipBoundaryPose {
+  startQuat: PoseQuatMap
+  endQuat: PoseQuatMap
+  startPos: PosePosMap
+  endPos: PosePosMap
+  seamDistance: number
+}
 
 export function setCrossfadeScale(s: number) {
   crossfadeScale = Math.max(0.1, s)
   console.log(`[animation] crossfadeScale = ${crossfadeScale}`)
+}
+
+function buildActionKey(actionId: string, loop: boolean): string {
+  return `${actionId}::${loop ? 'loop' : 'oneshot'}`
 }
 
 function ensureRuntimeCachesForCurrentModel(): void {
@@ -37,6 +56,7 @@ function ensureRuntimeCachesForCurrentModel(): void {
   clipCache.clear()
   actionCache.clear()
   currentAction = null
+  currentActionKey = null
   baseIdleAction = null
   currentCategory = 'idle'
 }
@@ -68,7 +88,9 @@ function computePoseDistance(targetClip: AnimationClip): number {
   return count > 0 ? (totalAngle / count) / Math.PI : 0.5
 }
 
-function trimClip(clip: AnimationClip, trimStartSec = 0.33, trimEndSec = 0.33): AnimationClip {
+function trimClip(clip: AnimationClip, enabled: boolean, trimStartSec = 0.33, trimEndSec = 0.33): AnimationClip {
+  if (!enabled) return clip
+
   const newDuration = clip.duration - trimStartSec - trimEndSec
   if (newDuration <= 0.5) return clip
 
@@ -104,18 +126,123 @@ function trimClip(clip: AnimationClip, trimStartSec = 0.33, trimEndSec = 0.33): 
   return clip
 }
 
-/** Crossfade duration based on actual pose difference × scale. */
-function getCrossfadeDuration(targetClip: AnimationClip, targetCategory: string): number {
-  if (targetCategory === 'idle' && currentCategory === 'idle') {
-    return IDLE_TO_IDLE_FADE
+function getClipBoundaryPose(clip: AnimationClip): ClipBoundaryPose {
+  const cached = clipBoundaryCache.get(clip)
+  if (cached) {
+    return cached
   }
 
-  const distance = computePoseDistance(targetClip)
-  let duration = CROSSFADE_MIN + distance * crossfadeScale * 0.45
+  const startQuat: PoseQuatMap = new Map()
+  const endQuat: PoseQuatMap = new Map()
+  const startPos: PosePosMap = new Map()
+  const endPos: PosePosMap = new Map()
+
+  for (const track of clip.tracks) {
+    const values = track.values
+    if (track.name.endsWith('.quaternion') && values.length >= 4) {
+      const nodeName = track.name.replace('.quaternion', '')
+      const start = new Quaternion(values[0], values[1], values[2], values[3]).normalize()
+      const endOffset = values.length - 4
+      const end = new Quaternion(values[endOffset], values[endOffset + 1], values[endOffset + 2], values[endOffset + 3]).normalize()
+      startQuat.set(nodeName, start)
+      endQuat.set(nodeName, end)
+      continue
+    }
+
+    if (track.name.endsWith('.position') && values.length >= 3) {
+      const nodeName = track.name.replace('.position', '')
+      const start = new Vector3(values[0], values[1], values[2])
+      const endOffset = values.length - 3
+      const end = new Vector3(values[endOffset], values[endOffset + 1], values[endOffset + 2])
+      startPos.set(nodeName, start)
+      endPos.set(nodeName, end)
+    }
+  }
+
+  const boundary: ClipBoundaryPose = {
+    startQuat,
+    endQuat,
+    startPos,
+    endPos,
+    seamDistance: computePoseMapDistance(startQuat, startPos, endQuat, endPos),
+  }
+
+  clipBoundaryCache.set(clip, boundary)
+  return boundary
+}
+
+function computePoseMapDistance(
+  fromQuat: PoseQuatMap,
+  fromPos: PosePosMap,
+  toQuat: PoseQuatMap,
+  toPos: PosePosMap,
+): number {
+  let quatTotal = 0
+  let quatCount = 0
+  let posTotal = 0
+  let posCount = 0
+
+  for (const [name, from] of fromQuat) {
+    const to = toQuat.get(name)
+    if (!to) continue
+    quatTotal += from.angleTo(to) / Math.PI
+    quatCount++
+  }
+
+  for (const [name, from] of fromPos) {
+    const to = toPos.get(name)
+    if (!to) continue
+    const normalized = Math.min(1, from.distanceTo(to) / POSITION_DISTANCE_NORMALIZER)
+    posTotal += normalized
+    posCount++
+  }
+
+  const quatScore = quatCount > 0 ? quatTotal / quatCount : 0
+  const posScore = posCount > 0 ? posTotal / posCount : 0
+
+  if (quatCount > 0 && posCount > 0) {
+    return quatScore * 0.78 + posScore * 0.22
+  }
+  if (quatCount > 0) return quatScore
+  if (posCount > 0) return posScore
+  return 0.5
+}
+
+function getClipSeamDistance(clip: AnimationClip): number {
+  return getClipBoundaryPose(clip).seamDistance
+}
+
+function computeClipBoundaryDistance(fromClip: AnimationClip, toClip: AnimationClip): number {
+  const fromBoundary = getClipBoundaryPose(fromClip)
+  const toBoundary = getClipBoundaryPose(toClip)
+  return computePoseMapDistance(fromBoundary.endQuat, fromBoundary.endPos, toBoundary.startQuat, toBoundary.startPos)
+}
+
+/** Crossfade duration based on live + boundary pose difference × scale. */
+function getCrossfadeDuration(targetClip: AnimationClip, targetCategory: string, targetLoop: boolean): number {
+  const liveDistance = computePoseDistance(targetClip)
+  let boundaryDistance = liveDistance
+  let seamPenalty = targetLoop ? getClipSeamDistance(targetClip) : 0
+
+  if (currentActionKey) {
+    const currentClip = clipCache.get(currentActionKey)
+    if (currentClip && currentClip !== targetClip) {
+      boundaryDistance = computeClipBoundaryDistance(currentClip, targetClip)
+      seamPenalty = Math.max(seamPenalty, getClipSeamDistance(currentClip))
+    }
+  }
+
+  const differenceScore = Math.max(liveDistance, boundaryDistance * 0.85)
+  const seamScore = Math.min(1, seamPenalty * 1.15)
+  let duration = CROSSFADE_MIN + (differenceScore * 0.58 + seamScore * 0.42) * crossfadeScale * 0.9
 
   // Action -> idle needs a gentler transition to avoid torso twist/lean artifacts.
   if (targetCategory === 'idle' && currentCategory !== 'idle') {
     duration = Math.max(duration, ACTION_TO_IDLE_MIN_FADE)
+  }
+
+  if (targetCategory !== 'idle' && currentCategory === 'idle' && differenceScore > 0.48) {
+    duration = Math.max(duration, IDLE_TO_ACTION_MIN_FADE)
   }
 
   return Math.min(Math.max(duration, CROSSFADE_MIN), CROSSFADE_MAX)
@@ -181,7 +308,7 @@ export async function warmupAnimationCache(actionIds: string[], maxConcurrent: n
   await Promise.all(workers)
 }
 
-async function getOrCreateClip(actionId: string): Promise<AnimationClip | null> {
+async function getOrCreateClip(actionId: string, loop: boolean): Promise<AnimationClip | null> {
   const { vrm } = state
   if (!vrm) {
     return null
@@ -189,18 +316,20 @@ async function getOrCreateClip(actionId: string): Promise<AnimationClip | null> 
 
   ensureRuntimeCachesForCurrentModel()
 
-  const cachedClip = clipCache.get(actionId)
+  const actionKey = buildActionKey(actionId, loop)
+  const cachedClip = clipCache.get(actionKey)
   if (cachedClip) {
     return cachedClip
   }
 
   const vrma = await getVRMA(actionId)
-  const clip = trimClip(createVRMAnimationClip(vrma, vrm))
-  clipCache.set(actionId, clip)
+  // Loop clips keep original boundaries to preserve loop integrity.
+  const clip = trimClip(createVRMAnimationClip(vrma, vrm), !loop)
+  clipCache.set(actionKey, clip)
   return clip
 }
 
-function getOrCreateAction(actionId: string, clip: AnimationClip): AnimationAction | null {
+function getOrCreateAction(actionKey: string, clip: AnimationClip): AnimationAction | null {
   const { mixer } = state
   if (!mixer) {
     return null
@@ -208,13 +337,13 @@ function getOrCreateAction(actionId: string, clip: AnimationClip): AnimationActi
 
   ensureRuntimeCachesForCurrentModel()
 
-  const cachedAction = actionCache.get(actionId)
+  const cachedAction = actionCache.get(actionKey)
   if (cachedAction) {
     return cachedAction
   }
 
   const action = mixer.clipAction(clip)
-  actionCache.set(actionId, action)
+  actionCache.set(actionKey, action)
   return action
 }
 
@@ -232,15 +361,21 @@ export async function loadAndPlayAction(actionId: string, loop: boolean = false,
   const { mixer } = state
   if (!mixer) return null
 
-  const clip = await getOrCreateClip(actionId)
+  const actionKey = buildActionKey(actionId, loop)
+  const clip = await getOrCreateClip(actionId, loop)
   if (!clip) return null
 
-  const newAction = getOrCreateAction(actionId, clip)
+  const newAction = getOrCreateAction(actionKey, clip)
   if (!newAction) return null
 
   const targetCategory = category || 'action'
-  const fadeDuration = getCrossfadeDuration(clip, targetCategory)
+  const fadeDuration = getCrossfadeDuration(clip, targetCategory, loop)
   const previousAction = currentAction
+
+  if (previousAction === newAction && loop) {
+    currentCategory = targetCategory
+    return newAction
+  }
 
   newAction.enabled = true
   newAction.reset()
@@ -272,6 +407,7 @@ export async function loadAndPlayAction(actionId: string, loop: boolean = false,
 
   newAction.play()
   currentAction = newAction
+  currentActionKey = actionKey
   currentCategory = targetCategory
 
   if (!loop) {
@@ -287,7 +423,7 @@ export async function loadAndPlayAction(actionId: string, loop: boolean = false,
   return newAction
 }
 
-export async function playBaseIdle(actionId: string = '119_Idle') {
+export async function playBaseIdle(actionId: string = DEFAULT_BASE_IDLE_ACTION) {
   const action = await loadAndPlayAction(actionId, true, undefined, 'idle')
   if (action) baseIdleAction = action
 
@@ -326,6 +462,7 @@ export function stopAnimation() {
     currentAction.fadeOut(0.5)
     const actionToStop = currentAction
     currentAction = null
+    currentActionKey = null
     currentCategory = 'idle'
 
     window.setTimeout(() => {

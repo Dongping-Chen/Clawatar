@@ -1,7 +1,7 @@
 import type { CharacterState, IdleConfig } from './types'
 import { state } from './main'
 import { getActivityMode } from './activity-modes'
-import { loadAndPlayAction, playBaseIdle, warmupAnimationCache } from './animation'
+import { DEFAULT_BASE_IDLE_ACTION, loadAndPlayAction, playBaseIdle, warmupAnimationCache } from './animation'
 import { setExpression, resetExpressionsImmediately } from './expressions'
 import { triggerSpeak, playAudioLipSync, resetLipSync } from './lip-sync'
 import { broadcastSyncCommand } from './sync-bridge'
@@ -14,7 +14,11 @@ export const idleConfig: IdleConfig = {
 }
 
 // noidle mode: follower instances skip idle animation picks, only respond to WS commands
-const isFollower = new URLSearchParams(window.location.search).has('noidle')
+const queryParams = new URLSearchParams(window.location.search)
+const isFollower = queryParams.has('noidle')
+const isEmbedMode = queryParams.has('embed')
+const isBackgroundOnly = queryParams.has('bgonly')
+const shouldWarmupAnimations = !isBackgroundOnly && (!isEmbedMode || !isFollower)
 
 export function setIdleAnimationsEnabled(enabled: boolean) {
   state.idleAnimationsEnabled = enabled
@@ -26,14 +30,15 @@ export function setMeetingMode(enabled: boolean) { meetingMode = enabled }
 
 // Meeting-friendly idle categories — subtle seated/standing animations only
 const MEETING_IDLE_CATEGORIES: string[] = [
-  '119_Idle',
-  '88_Thinking',
-  '118_Head Nod Yes',
-  '145_Shrugging',
+  DEFAULT_BASE_IDLE_ACTION,
   'dm_0',
   'dm_5',
   'dm_6',
   'dm_7',
+  'dm_13',
+  'dm_14',
+  'dm_15',
+  '86_Talking',
   'dm_120',
   'dm_121',
   'dm_128',
@@ -42,7 +47,7 @@ const MEETING_IDLE_CATEGORIES: string[] = [
 // Animation taxonomy based on Dongping's manual review (2026-02-19)
 const IDLE_CATEGORIES = {
   // Talking — use during conversation (very important)
-  talking: ['dm_0', 'dm_5', 'dm_6', 'dm_7', 'dm_13', 'dm_14', 'dm_15', 'dm_90', '86_Talking', '137_Quick Formal Bow', '138_Quick Informal Bow'],
+  talking: ['dm_0', 'dm_5', 'dm_6', 'dm_7', 'dm_13', 'dm_14', 'dm_15', 'dm_90', '86_Talking'],
 
   // Happy/Encouraging reactions
   happy: ['19_Clapping', 'dm_2', 'dm_28', 'dm_45', 'dm_53'],
@@ -72,13 +77,13 @@ const IDLE_CATEGORIES = {
   dance: ['1_Arms Hip Hop Dance', '3_Bboy Hip Hop Move', '4_Belly Dance', '5_Bellydancing', '18_Chicken Dance', '25_Dancing Twerk', '41_Hip Hop Dancing', '42_Hip Hop Dancing_2', '43_Hip Hop Dancing_3', '44_Hip Hop Dancing_4', '45_House Dancing', '46_House Dancing_2', '47_Jazz Dancing', '54_Macarena Dance', '67_Rumba Dancing', '70_Silly Dancing', '78_Snake Hip Hop Dance', '83_Swing Dancing', '84_Swing Dancing_2', '85_Swing Dancing_3', 'dm_38', 'reze_dance_hard'],
 
   // Idle (standing)
-  idle: ['119_Idle', 'dm_22', 'dm_23', 'dm_24', 'dm_33', 'dm_46', 'dm_59', 'dm_63', 'dm_82', 'dm_86', 'dm_88', 'dm_89', 'dm_101', 'dm_120', 'dm_121', 'dm_122', 'dm_123', 'dm_124', 'dm_125', 'dm_126', 'dm_127', 'dm_128', 'dm_138', 'dm_139'],
+  idle: ['dm_22', 'dm_23', 'dm_24', 'dm_33', 'dm_46', 'dm_59', 'dm_63', 'dm_82', 'dm_86', 'dm_88', 'dm_89', 'dm_101', 'dm_120', 'dm_121', 'dm_122', 'dm_123', 'dm_124', 'dm_125', 'dm_126', 'dm_127', 'dm_128', 'dm_138', 'dm_139'],
 
   // Night/Sleepy idle
-  tired: ['29_Drunk Idle Variation', '30_Drunk Idle', '64_Rejected', '65_Relieved Sigh', '127_Leaning', '163_Yawn', 'dm_17', 'dm_110', 'dm_111', 'dm_129'],
+  tired: ['29_Drunk Idle Variation', '30_Drunk Idle', '64_Rejected', '127_Leaning', 'dm_17', 'dm_110', 'dm_111', 'dm_129'],
 
   // Sitting idle
-  sitting: ['73_Sitting Disbelief', '74_Sitting Thumbs Up', '75_Sitting', '76_Sitting_2', '149_Sitting Idle', '150_Sitting Laughing', 'dm_85', 'dm_87', 'dm_114'],
+  sitting: ['75_Sitting', '76_Sitting_2', '149_Sitting Idle', 'dm_85', 'dm_87', 'dm_114'],
 
   // Oneshot micro-actions
   oneshot: ['49_Joyful Jump', '131_Neck Stretching', '155_Talking On Phone', 'dm_19', 'dm_32', 'dm_134', 'dm_135'],
@@ -93,40 +98,66 @@ const IDLE_CATEGORIES = {
   whatever: ['93_Whatever Gesture', '145_Shrugging'],
 }
 
+const LOOP_IDLE_CATEGORIES = {
+  idle: IDLE_CATEGORIES.idle,
+  tired: IDLE_CATEGORIES.tired,
+  sitting: IDLE_CATEGORIES.sitting,
+  talking: IDLE_CATEGORIES.talking,
+} as const
+
+type IdleLoopCategory = keyof typeof LOOP_IDLE_CATEGORIES
+
 const HOT_SYNC_ACTIONS: string[] = Array.from(new Set([
-  '119_Idle',
-  ...MEETING_IDLE_CATEGORIES,
-  ...Object.values(IDLE_CATEGORIES).flat(),
+  // Core idles
+  DEFAULT_BASE_IDLE_ACTION,
+  '88_Thinking',
+  '118_Head Nod Yes',
+  '145_Shrugging',
+  '149_Sitting Idle',
+  '75_Sitting',
+  // Fast-response talking/greeting actions
+  '86_Talking',
+  '137_Quick Formal Bow',
+  '138_Quick Informal Bow',
+  '79_Standing Greeting',
+  '161_Waving',
+  'dm_0',
+  'dm_5',
+  'dm_6',
+  'dm_7',
+  // Common emotion picks
+  '19_Clapping',
+  '53_Loser',
+  '0_Angry',
+  '22_Crying',
+  '23_Crying_2',
+  '65_Relieved Sigh',
+  '71_Singing',
 ]))
 
 let warmupStarted = false
 
 function ensureAnimationWarmupStarted() {
-  if (warmupStarted) return
+  if (warmupStarted || !shouldWarmupAnimations || !state.vrm) return
   warmupStarted = true
 
-  // Preload common/idle VRMA files in background so cross-device sync can start immediately.
-  void warmupAnimationCache(HOT_SYNC_ACTIONS, 3)
+  // Delay warmup slightly so initial model decode + first frame land faster.
+  const delayMs = isEmbedMode ? 1200 : 300
+  window.setTimeout(() => {
+    void warmupAnimationCache(HOT_SYNC_ACTIONS, isEmbedMode ? 1 : 2)
+  }, delayMs)
 }
 
-// Default weights (overridden by time-of-day)
-const CATEGORY_WEIGHTS: Array<[keyof typeof IDLE_CATEGORIES, number]> = [
-  ['idle', 0.25],
-  ['cute', 0.15],
-  ['talking', 0.10],
-  ['happy', 0.10],
-  ['affection', 0.08],
-  ['dance', 0.07],
-  ['tired', 0.06],
-  ['taunt', 0.05],
-  ['shy', 0.04],
-  ['oneshot', 0.04],
-  ['sitting', 0.03],
-  ['whatever', 0.03],
+// Idle loop pool weights.
+const CATEGORY_WEIGHTS: Array<[IdleLoopCategory, number]> = [
+  ['idle', 0.64],
+  ['tired', 0.14],
+  ['talking', 0.12],
+  ['sitting', 0.10],
 ]
 
 // Time-of-day weight adjustments
-function getTimeAdjustedWeights(): Array<[keyof typeof IDLE_CATEGORIES, number]> {
+function getTimeAdjustedWeights(): Array<[IdleLoopCategory, number]> {
   // Keep a stable distribution so idle remains dominant when not actively conversing.
   return CATEGORY_WEIGHTS
 }
@@ -152,13 +183,13 @@ function getSyncSeed(): number {
 
 let idlePickCounter = 0
 
-function pickIdleActionWithCategory(): { action: string; category: keyof typeof IDLE_CATEGORIES } {
+function pickIdleActionWithCategory(): { action: string; category: IdleLoopCategory } {
   // Keep sync by time window while varying repeated picks within the same window.
   const rng = seededRandom(getSyncSeed() + idlePickCounter++)
   const weights = getTimeAdjustedWeights()
   const roll = rng()
   let cumulative = 0
-  let category: keyof typeof IDLE_CATEGORIES = 'idle'
+  let category: IdleLoopCategory = 'idle'
   for (const [cat, weight] of weights) {
     cumulative += weight
     if (roll <= cumulative) {
@@ -166,7 +197,7 @@ function pickIdleActionWithCategory(): { action: string; category: keyof typeof 
       break
     }
   }
-  const actions = IDLE_CATEGORIES[category]
+  const actions = LOOP_IDLE_CATEGORIES[category]
   const action = actions[Math.floor(rng() * actions.length)]
   return { action, category }
 }
@@ -185,38 +216,38 @@ function setState(s: CharacterState) {
 }
 
 // Map animation categories to subtle expression settings
-function getExpressionForCategory(category: keyof typeof IDLE_CATEGORIES): { name: string; weight: number } | null {
+function getExpressionForCategory(category: IdleLoopCategory): { name: string; weight: number } | null {
   switch (category) {
-    case 'happy':     return { name: 'happy', weight: 0.3 }
-    case 'cute':      return { name: 'happy', weight: 0.25 }
-    case 'affection': return { name: 'happy', weight: 0.35 }
-    case 'shy':       return { name: 'happy', weight: 0.15 }
     case 'tired':     return { name: 'relaxed', weight: 0.4 }
-    case 'dance':     return { name: 'happy', weight: 0.4 }
-    case 'singing':   return { name: 'happy', weight: 0.3 }
-    case 'taunt':     return { name: 'happy', weight: 0.2 }
-    case 'sad':       return { name: 'sad', weight: 0.4 }
-    case 'angry':     return { name: 'angry', weight: 0.4 }
     case 'talking':   return null
     case 'idle':      return null
     case 'sitting':   return null
-    case 'oneshot':   return null
     default: return null
   }
 }
 
-let currentIdleCategory: keyof typeof IDLE_CATEGORIES = 'idle'
+let currentIdleCategory: IdleLoopCategory = 'idle'
 
 interface ActionSyncOptions {
   sync?: boolean
   expression?: { name: string; weight: number }
+  loop?: boolean
+  category?: string
+}
+
+function updateHoldWindow(elapsed: number, seedOffset = 99): void {
+  const holdRng = seededRandom(getSyncSeed() + seedOffset)
+  holdUntil = elapsed + idleConfig.idleMinHoldSeconds +
+    holdRng() * (idleConfig.idleMaxHoldSeconds - idleConfig.idleMinHoldSeconds)
 }
 
 export function updateStateMachine(elapsed: number) {
-  ensureAnimationWarmupStarted()
-
   // Follower mode: don't pick idle animations, only respond to WS play_action
   if (isFollower) return
+  // Background-only renderer has no avatar actions to drive.
+  if (isBackgroundOnly) return
+  if (!state.vrm) return
+  ensureAnimationWarmupStarted()
   // Avatar config can disable random idle picks
   if (!state.idleAnimationsEnabled) return
   // Activity mode handles its own animations
@@ -237,21 +268,28 @@ export function updateStateMachine(elapsed: number) {
     const meetRng = seededRandom(getSyncSeed() + 1)
     const pick = MEETING_IDLE_CATEGORIES[Math.floor(meetRng() * MEETING_IDLE_CATEGORIES.length)]
     setState('action')
-    loadAndPlayAction(pick, false, () => {
+    resetExpressionsImmediately()
+    broadcastIdleAction(pick, null, 'idle')
+    loadAndPlayAction(pick, true, undefined, 'idle').then(() => {
+      setState('idle')
+      updateHoldWindow(elapsed, 101)
+    }).catch(() => {
       resetExpressionsImmediately()
-      playBaseIdle().then(() => {
-        setState('idle')
-        holdUntil = elapsed + 12 + Math.random() * 15  // longer hold between meeting idles
-      })
-    }).catch(() => { setState('idle') })
+      playBaseIdle().then(() => setState('idle'))
+    })
     return
   }
 
-  if (chanceRoll > idleConfig.idleActionChance) return
+  if (chanceRoll > idleConfig.idleActionChance) {
+    console.log(`[IDLE] chance miss: ${chanceRoll.toFixed(2)} > ${idleConfig.idleActionChance}`)
+    return
+  }
 
   const { action: actionId, category } = pickIdleActionWithCategory()
+  console.log(`[IDLE] picked loop: ${actionId} (${category})`)
   currentIdleCategory = category
   setState('action')
+  resetExpressionsImmediately()
 
   // Broadcast to WS so follower instances play the same animation
   // Set subtle expression matching the animation's emotion
@@ -261,27 +299,30 @@ export function updateStateMachine(elapsed: number) {
   }
 
   // Broadcast animation + expression to followers via WS
-  broadcastIdleAction(actionId, expr)
+  broadcastIdleAction(actionId, expr, category)
 
-  loadAndPlayAction(actionId, false, () => {
-    // ALWAYS reset expressions when idle animation finishes
-    resetExpressionsImmediately()
-    playBaseIdle().then(() => {
-      setState('idle')
-      // Use synced hold duration so devices stay in lockstep
-      const holdRng = seededRandom(getSyncSeed() + 99)
-      holdUntil = elapsed + idleConfig.idleMinHoldSeconds +
-        holdRng() * (idleConfig.idleMaxHoldSeconds - idleConfig.idleMinHoldSeconds)
-    })
-  }, category).catch(() => {
-    resetExpressionsImmediately()
+  // Loop idles stay active continuously; hold window controls when to rotate to another loop.
+  loadAndPlayAction(actionId, true, undefined, category).then(() => {
     setState('idle')
+    updateHoldWindow(elapsed, 99)
+  }).catch(() => {
+    resetExpressionsImmediately()
+    playBaseIdle().then(() => setState('idle'))
   })
 }
 
 /** Broadcast idle action + expression to relay + native bridge for cross-device sync */
-function broadcastIdleAction(actionId: string, expression?: { name: string; weight: number } | null) {
-  const msg: any = { type: 'play_action', action_id: actionId }
+function broadcastIdleAction(
+  actionId: string,
+  expression?: { name: string; weight: number } | null,
+  category: IdleLoopCategory = 'idle',
+) {
+  const msg: any = {
+    type: 'play_action',
+    action_id: actionId,
+    loop: true,
+    category,
+  }
   if (expression) {
     msg.expression = expression.name
     msg.expression_weight = expression.weight
@@ -293,9 +334,16 @@ export async function requestAction(actionId: string, options: ActionSyncOptions
   ensureAnimationWarmupStarted()
 
   const shouldSync = options.sync ?? true
+  const loop = options.loop ?? false
+  const targetCategory = options.category ?? (loop ? 'idle' : 'action')
 
   if (shouldSync) {
-    const syncMessage: any = { type: 'play_action', action_id: actionId }
+    const syncMessage: any = {
+      type: 'play_action',
+      action_id: actionId,
+      loop,
+      category: targetCategory,
+    }
     if (options.expression) {
       syncMessage.expression = options.expression.name
       syncMessage.expression_weight = options.expression.weight
@@ -303,11 +351,17 @@ export async function requestAction(actionId: string, options: ActionSyncOptions
     broadcastSyncCommand(syncMessage)
   }
 
+  if (loop) {
+    setState('idle')
+    await loadAndPlayAction(actionId, true, undefined, targetCategory)
+    return
+  }
+
   setState('action')
   await loadAndPlayAction(actionId, false, () => {
     resetExpressionsImmediately()  // Clear expression overrides right when action ends
     playBaseIdle().then(() => setState('idle'))
-  })
+  }, targetCategory)
 }
 
 /** Fallback text-based speak (no audio) */
