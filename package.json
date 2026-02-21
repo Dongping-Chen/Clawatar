@@ -29,7 +29,7 @@
     "ws-server": "tsx server/ws-server.ts",
     "start": "node scripts/start.mjs",
     "meeting": "tsx virtual-meeting/meeting-bridge-v3.ts",
-    "build": "vite build",
+    "build": "vite build && rm -rf dist/scenes",
     "serve": "vite preview",
     "catalog": "node scripts/generate-catalog.mjs"
   },
